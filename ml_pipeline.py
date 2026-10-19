@@ -73,7 +73,7 @@ def extract_scibert_embeddings(texts, tokenizer, model, batch_size=BATCH_SIZE):
 # -----------------------------------------------------------------------------
 # 2. DIMENSION REDUCTION & SPATIAL MAPPING
 # -----------------------------------------------------------------------------
-def reduce_dimensions_umap(embeddings, n_neighbors=15, min_dist=0.1, n_components=2):
+def reduce_dimensions_umap(embeddings, n_neighbors=15, min_dist=0.05, n_components=2):
     """Compress high-dimensional vectors (768D) to 2D manifold coordinates."""
     print("Performing UMAP dimensionality reduction...")
     reducer = umap.UMAP(
@@ -88,14 +88,15 @@ def reduce_dimensions_umap(embeddings, n_neighbors=15, min_dist=0.1, n_component
 # -----------------------------------------------------------------------------
 # 3. CLUSTERING, INFLUENCE SCORING, AND METADATA EXTRACTION
 # -----------------------------------------------------------------------------
-def compute_hdbscan_clusters(coords_2d, min_cluster_size=10):
+def compute_hdbscan_clusters(coords_2d, min_cluster_size=1000):
     """Density-based spatial clustering for unstructured semantic groupings."""
     print("Computing HDBSCAN density-based clusters...")
     clusterer = hdbscan.HDBSCAN(
         min_cluster_size=min_cluster_size,
         metric='euclidean',
-        cluster_selection_method='eom',
-        core_dist_n_jobs=-1
+        cluster_selection_method='leaf',
+        core_dist_n_jobs=-1,
+        min_samples=15
     )
     return clusterer.fit_predict(coords_2d)
 
@@ -321,67 +322,70 @@ def run_pipeline(csv_path="arXiv_scientific_dataset.csv"):
 
 
 def create_snapshot(df, snapshot_year=None, max_titles_to_label=15, output_image="arxiv_snapshot.png"):
-    # 1. PARSE & FILTER DATA
     df_copy = df.copy()
-    # df_copy['parsed_date'] = pd.to_datetime(df_copy['updated_date'], errors='coerce', format='mixed')
     
-    if snapshot_year is not None:
+    # 1. Clean Title Formatting
+    if snapshot_year is not None and str(snapshot_year).lower() != 'none':
+        df_copy['parsed_date'] = pd.to_datetime(df_copy['updated_date'], errors='coerce', format='mixed')
         snapshot_df = df_copy[df_copy['parsed_date'].dt.year <= snapshot_year].copy()
+        title_str = f"arXiv Landscape Snapshot (Up to {snapshot_year})"
     else:
         snapshot_df = df_copy
-
-    print(f"Filtering snapshot up to year: {snapshot_year} | Papers found: {len(snapshot_df)}")
+        title_str = "arXiv Landscape Snapshot (Full Dataset - 287k Papers)"
 
     if snapshot_df.empty:
         return
 
-    # 2. SETUP PLOT
-    plt.figure(figsize=(14, 10))
+    # 2. Setup Canvas
+    plt.figure(figsize=(16, 12))
     
-    # Extract unique cluster titles (excluding noise for colormap indexing)
+    # 3. Categorical Palette for Clusters
     unique_titles = [t for t in snapshot_df['cluster_title'].unique() if "Noise" not in t]
     color_map = plt.colormaps['tab20'].resampled(max(len(unique_titles), 1))
     color_lookup = {title: color_map(i) for i, title in enumerate(unique_titles)}
 
-    # 3. PLOT CLUSTERS USING PRE-GENERATED TITLES
+    # 4. Plot Clusters using groupby
     for title, c_df in snapshot_df.groupby('cluster_title'):
-        if title == "Noise / Unclustered":
-            # Plot noise in muted gray
+        if "Noise" in title:
             plt.scatter(
-                c_df['x_2d'], c_df['y_2d'],
-                c='gray', alpha=0.25, s=15,
-                label=title
+                c_df['umap_x'], c_df['umap_y'],
+                c='gray', alpha=0.15, s=5,  # Smaller dots and lower alpha for 287k points
+                label=title, rasterized=True
             )
         else:
-            # Scale node size by pre-calculated influence score
-            sizes = c_df['influence_score'] * 500 if 'influence_score' in c_df.columns else 30
-            
+            sizes = np.clip(c_df['influence_score'] * 80, 10, 300) if 'influence_score' in c_df.columns else 10
             plt.scatter(
-                c_df['x_2d'], c_df['y_2d'],
+                c_df['umap_x'], c_df['umap_y'],
                 color=color_lookup.get(title),
-                alpha=0.7,
+                alpha=0.6,
                 s=sizes,
                 label=title,
-                edgecolors='w',
-                linewidths=0.3
+                edgecolors='none',          # Removed edgecolors to speed up rendering 287k points
+                rasterized=True
             )
 
-    # 4. ANNOTATE TOP LANDMARKS
+    # 5. Clean Landmark Text Annotations (Prevents Label Overlap)
     if 'influence_score' in snapshot_df.columns and max_titles_to_label > 0:
         top_landmarks = snapshot_df.sort_values(by='influence_score', ascending=False).head(max_titles_to_label)
+        
         for _, row in top_landmarks.iterrows():
             clean_title = str(row['title']).replace('\n', ' ').strip()
-            truncated_title = (clean_title[:32] + '...') if len(clean_title) > 35 else clean_title
+            truncated_title = (clean_title[:28] + '...') if len(clean_title) > 30 else clean_title
             
             plt.annotate(
                 truncated_title,
-                (row['x_2d'], row['y_2d']),
-                fontsize=8, fontweight='bold', alpha=0.85,
-                xytext=(4, 4), textcoords='offset points'
+                (row['umap_x'], row['umap_y']),
+                fontsize=8,
+                fontweight='bold',
+                alpha=0.9,
+                bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.7, edgecolor='none'), # White backdrop box
+                arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0', lw=0.5, color='black'),
+                xytext=(10, 10),
+                textcoords='offset points'
             )
 
-    # 5. FORMAT & SAVE
-    plt.title(f"arXiv Landscape Snapshot (Up to {snapshot_year})", fontsize=14, fontweight='bold')
+    # 6. Formatting & Export
+    plt.title(title_str, fontsize=16, fontweight='bold')
     plt.xlabel("UMAP Dimension 1")
     plt.ylabel("UMAP Dimension 2")
     plt.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=9, frameon=True)
@@ -390,10 +394,7 @@ def create_snapshot(df, snapshot_year=None, max_titles_to_label=15, output_image
     plt.close()
 
 if __name__ == "__main__":
-    df = run_pipeline("arXiv_scientific_dataset_with_citations_1000.csv")
-    # df = pd.read_csv("enriched_arXiv_scientific_dataset_with_citations.csv")
-    # cluster_title_map = generate_cluster_titles(df, text_column='summary', top_n_keywords=3)
-    # df['cluster_title'] = df['cluster_label'].map(cluster_title_map)
+    df = run_pipeline("arXiv_scientific_dataset_with_citations.csv")
 
     graph_snapshot = create_snapshot(
         df,
