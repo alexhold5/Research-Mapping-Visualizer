@@ -11,11 +11,15 @@
     <div id="hud">
       <h1>Research Map</h1>
       <p id="stats">Loading…</p>
-      <p class="hint">Position = topic similarity (UMAP) · color = cluster · size = influence</p>
-      <p class="hint">Scroll to zoom · drag to pan · click a paper to select its cluster</p>
-      <p id="selection" hidden></p>
-      <h2 id="clusters-heading">Clusters</h2>
-      <ul id="cluster-list"></ul>
+      <p id="hint" class="hint"></p>
+      <div id="selection" hidden></div>
+      <h2 class="section">Filter by arXiv field</h2>
+      <div id="legend"></div>
+      <h2 class="section">Find a cluster</h2>
+      <div id="search">
+        <input id="search-input" type="search" placeholder="Search topics, e.g. federated, diffusion…" autocomplete="off" spellcheck="false" />
+        <ul id="search-results" hidden></ul>
+      </div>
     </div>
     <aside id="details" hidden aria-live="polite">
       <button id="details-close" type="button" aria-label="Close details" title="Close (Esc)">×</button>

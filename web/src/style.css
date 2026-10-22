@@ -45,7 +45,32 @@ html, body {
   border-top: 1px solid rgba(255, 255, 255, 0.1);
 }
 
-#hud #clusters-heading {
+/* "← All clusters" button + cluster name, shown while a cluster is open */
+#selection #back {
+  padding: 3px 10px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  color: #e6e8ee;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+#selection #back:hover {
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+}
+
+#selection .banner-title {
+  margin-top: 8px;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+/* Section headings inside the panel */
+#hud .section {
   margin: 12px 0 4px;
   color: #8b92a5;
   font-size: 11px;
@@ -54,18 +79,93 @@ html, body {
   text-transform: uppercase;
 }
 
-/* The panel ignores the mouse so the map underneath stays draggable; the list opts back in. */
-#cluster-list {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  max-height: calc(100vh - 360px);
-  min-height: 90px;
-  overflow-y: auto;
+/* arXiv field chips: the color key, and click-to-filter. The panel ignores the mouse so the map
+   underneath stays draggable; the chips and the search box opt back in. */
+#hud #legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
   pointer-events: auto;
 }
 
-#cluster-list button {
+#legend .chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px 2px 7px;
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 999px;
+  color: #c4c8d4;
+  font: inherit;
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+#legend .chip .swatch {
+  margin-right: 0;
+}
+
+#legend .chip:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+#legend .chip:focus-visible {
+  outline: 2px solid #8b92a5;
+}
+
+#legend .chip.active {
+  background: rgba(255, 255, 255, 0.2);
+  border-color: rgba(255, 255, 255, 0.55);
+  color: #fff;
+}
+
+#legend.filtering .chip:not(.active) {
+  opacity: 0.5;
+}
+
+/* Cluster search */
+#search {
+  pointer-events: auto;
+}
+
+#search-input {
+  box-sizing: border-box;
+  width: 100%;
+  padding: 6px 9px;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  color: #e6e8ee;
+  font: inherit;
+  font-size: 12px;
+}
+
+#search-input::placeholder {
+  color: #8b92a5;
+}
+
+#search-input:focus {
+  outline: none;
+  border-color: rgba(255, 255, 255, 0.5);
+}
+
+#search-results {
+  margin: 4px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+#search-results .heading,
+#search-results .empty {
+  padding: 3px 6px;
+  color: #8b92a5;
+  font-size: 11px;
+}
+
+#search-results button {
   display: flex;
   align-items: baseline;
   gap: 8px;
@@ -82,31 +182,23 @@ html, body {
   cursor: pointer;
 }
 
-#cluster-list button:hover {
-  background: rgba(255, 255, 255, 0.08);
+#search-results li.active button,
+#search-results button:hover {
+  background: rgba(255, 255, 255, 0.12);
   color: #fff;
 }
 
-#cluster-list button:focus-visible {
-  outline: 2px solid #8b92a5;
-}
-
-#cluster-list li.active button {
-  background: rgba(255, 255, 255, 0.14);
-  color: #fff;
-}
-
-#cluster-list .swatch {
+#search-results .swatch {
   flex: none;
   margin-right: 0;
 }
 
-#cluster-list .name {
+#search-results .name {
   flex: 1;
   min-width: 0;
 }
 
-#cluster-list .count {
+#search-results .count {
   flex: none;
   color: #8b92a5;
   font-variant-numeric: tabular-nums;
@@ -412,8 +504,30 @@ html, body {
 }
 
 /* 3d-force-graph's built-in hover tooltip */
-.scene-tooltip {
-  max-width: 320px;
+.float-tooltip-kap {
+  max-width: 320px !important;
+  padding: 6px 9px !important;
+  background: rgba(15, 18, 26, 0.94) !important;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px !important;
   font-size: 12px !important;
-  line-height: 1.35;
+  line-height: 1.4;
+}
+
+/* Where a highlighted citation line leads (shown while hovering it) */
+#edge-tip {
+  position: fixed;
+  z-index: 5;
+  max-width: 320px;
+  padding: 6px 9px;
+  background: rgba(15, 18, 26, 0.95);
+  border: 1px solid rgba(255, 255, 255, 0.2);
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.4;
+  pointer-events: none;
+}
+
+#edge-tip span {
+  color: #8b92a5;
 }
