@@ -19,8 +19,8 @@ import re
 # CONFIGURATION & HARDWARE SETUP (CPU QUICK-TEST FRIENDLY)
 # -----------------------------------------------------------------------------
 MODEL_NAME = "allenai/scibert_scivocab_uncased"
-SAMPLE_SIZE = 1000      # Set to None or len(df) to process full dataset
-BATCH_SIZE = 16         # Memory-friendly batch size for CPU
+SAMPLE_SIZE = None      # Set to None or len(df) to process full dataset
+BATCH_SIZE = 128         # Memory-friendly batch size for CPU
 MAX_LENGTH = 128        # Truncate sequence length for ~4x faster execution
 CPU_CORES = os.cpu_count() or 4
 
@@ -102,27 +102,25 @@ def compute_hdbscan_clusters(coords_2d, min_cluster_size=300):
     )
     return clusterer.fit_predict(coords_2d)
 
-    # clusterer = hdbscan.HDBSCAN(
-    #     min_cluster_size=1000,
-    #     min_samples=15,
-    #     cluster_selection_method='leaf',
-    #     prediction_data=True,      # Required for soft clustering / membership queries
-    #     metric='euclidean'
-    # )
-    # labels = clusterer.fit_predict(umap_embeddings)
-
-    # # 2. Calculate membership probabilities for all points
-    # soft_clusters = hdbscan.all_points_membership_vectors(clusterer)
-
-    # # 3. Assign noise points (-1) to their highest-probability cluster
-    # # (Optional threshold: e.g., only assign if probability > 0.1)
-    # reassigned_labels = labels.copy()
-    # for i in range(len(labels)):
-    #     if labels[i] == -1:
-    #         probs = soft_clusters[i]
-    #         if np.max(probs) > 0.05:  # Soft threshold to avoid completely lost outliers
-    #             reassigned_labels[i] = np.argmax(probs)
-    # return reassigned_labels
+    #clusterer = hdbscan.HDBSCAN(
+    #    min_cluster_size=1000,
+    #    min_samples=15,
+    #    cluster_selection_method='leaf',
+    #    prediction_data=True,      # Required for soft clustering / membership queries
+    #    metric='euclidean'
+    #)
+    #labels = clusterer.fit_predict(coords_2d)
+    ## 2. Calculate membership probabilities for all points
+    #soft_clusters = hdbscan.all_points_membership_vectors(clusterer)
+    ## 3. Assign noise points (-1) to their highest-probability cluster
+    ## (Optional threshold: e.g., only assign if probability > 0.1)
+    #reassigned_labels = labels.copy()
+    #for i in range(len(labels)):
+    #    if labels[i] == -1:
+    #        probs = soft_clusters[i]
+    #        if np.max(probs) > 0.05:  # Soft threshold to avoid completely lost outliers
+    #            reassigned_labels[i] = np.argmax(probs)
+    #return reassigned_labels
 
 
 
@@ -326,7 +324,7 @@ def run_pipeline(csv_path="arXiv_scientific_dataset.csv"):
     
     # Optional Influence Score computation
     # G = nx.erdos_renyi_graph(n=len(df), p=0.001, directed=True)
-    G = load_graph_from_json("citation_graph_adjacency_1000.json", df)
+    G = load_graph_from_json("citation_graph_adjacency.json", df)
     df['influence_score'] = calculate_influence_scores(df, citation_col='citations', graph=G)
 
     # Extract Orthogonal Temporal Metadata for 3D timelines
@@ -373,14 +371,14 @@ def create_snapshot(df, snapshot_year=None, max_titles_to_label=15, output_image
     for title, c_df in snapshot_df.groupby('cluster_title'):
         if "Noise" in title:
             plt.scatter(
-                c_df['umap_x'], c_df['umap_y'],
+                c_df['x_2d'], c_df['y_2d'],
                 c='gray', alpha=0.15, s=5,  # Smaller dots and lower alpha for 287k points
                 label=title, rasterized=True
             )
         else:
             sizes = np.clip(c_df['influence_score'] * 80, 10, 300) if 'influence_score' in c_df.columns else 10
             plt.scatter(
-                c_df['umap_x'], c_df['umap_y'],
+                c_df['x_2d'], c_df['y_2d'],
                 color=color_lookup.get(title),
                 alpha=0.6,
                 s=sizes,
@@ -399,7 +397,7 @@ def create_snapshot(df, snapshot_year=None, max_titles_to_label=15, output_image
             
             plt.annotate(
                 truncated_title,
-                (row['umap_x'], row['umap_y']),
+                (row['x_2d'], row['y_2d']),
                 fontsize=8,
                 fontweight='bold',
                 alpha=0.9,

@@ -6,4 +6,5 @@ dist/
 # Data files: too big for git (raw dataset is 478 MB, GitHub's limit is 100 MB per file)
 # and reproducible from the pipeline. Download the raw dataset from Kaggle.
 *.csv
-*.pdf
+*.pdf\
+*.png

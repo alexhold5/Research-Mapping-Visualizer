@@ -487,7 +487,7 @@ async function main() {
   }
 
   document.getElementById('stats').textContent =
-    `${meta.paperCount} papers · ${meta.linkCount} citation links · ${clusters.filter((c) => c.id !== -1).length} clusters · ` +
+    `${meta.paperCount}${meta.totalPapers > meta.paperCount ? ` of ${meta.totalPapers.toLocaleString()}` : ''} papers · ${meta.linkCount} citation links · ${clusters.filter((c) => c.id !== -1).length} clusters · ` +
     `${Math.floor(meta.yearMin)}–${Math.floor(meta.yearMax)}`;
 
   // Handy for poking at things from the browser console while we build.
