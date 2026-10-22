@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useImperativeHandle, useMemo, useRef } from 'react';
 import ForceGraph3D, { type ForceGraphMethods, type LinkObject } from 'react-force-graph-3d';
-import { BackSide, Mesh, MeshBasicMaterial, SphereGeometry, type PerspectiveCamera } from 'three';
+import { BackSide, Mesh, MeshBasicMaterial, SphereGeometry, Vector3, type PerspectiveCamera } from 'three';
 import {
   CLUSTER_FIT_PADDING,
   CLUSTER_MIN_EXTENT,
@@ -11,12 +11,21 @@ import {
   HALO_MIN,
   HALO_WIDTH,
   PAN_SLACK,
+  TIMELINE_VIEW_DIR,
   clusterColor,
 } from '../constants';
-import { createFlightController, type FlightController, type OrbitLikeControls } from '../lib/camera';
-import { computeBounds } from '../lib/graph';
+import {
+  MOUSE,
+  TOUCH,
+  createFlightController,
+  type CameraPose,
+  type Coords,
+  type FlightController,
+  type OrbitLikeControls,
+} from '../lib/camera';
+import { computeBounds, type Bounds } from '../lib/graph';
 import { escapeHtml } from '../lib/html';
-import type { PaperNode, RawLink, ResolvedLink } from '../types';
+import type { PaperNode, RawLink, ResolvedLink, ViewMode } from '../types';
 
 // Outline = a slightly bigger white sphere behind the node ("halo").
 // BackSide renders only the inside of the shell, so it never covers the node in front of it.
@@ -25,6 +34,47 @@ const HALO_MATERIAL = new MeshBasicMaterial({ color: 0xffffff, side: BackSide })
 const tanHalfFov = (camera: PerspectiveCamera) => Math.tan((camera.fov * Math.PI) / 360);
 // camera.aspect updates a tick late on resize, so measure the window instead.
 const windowAspect = () => window.innerWidth / window.innerHeight;
+
+const clamp = (v: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, v));
+
+/**
+ * Distance at which a sphere of `radius` fits the view. The narrower of the two screen
+ * dimensions is the binding one, hence min(1, aspect).
+ */
+function distanceToFit(radius: number, camera: PerspectiveCamera, aspect: number, padding: number) {
+  return (padding * radius) / (tanHalfFov(camera) * Math.min(1, aspect));
+}
+
+/** Unit vector from the target toward the camera — the direction the map is being viewed from. */
+function viewDirection(camera: PerspectiveCamera, controls: OrbitLikeControls): Coords {
+  const dx = camera.position.x - controls.target.x;
+  const dy = camera.position.y - controls.target.y;
+  const dz = camera.position.z - controls.target.z;
+  const len = Math.hypot(dx, dy, dz) || 1;
+  return { x: dx / len, y: dy / len, z: dz / len };
+}
+
+/** The pose that frames the whole map: straight down in flat mode, tilted in timeline mode. */
+function homePose(bounds: Bounds, camera: PerspectiveCamera, mode: ViewMode): CameraPose {
+  const { center } = bounds;
+  if (mode === 'flat') {
+    const t = tanHalfFov(camera);
+    const distance =
+      FIT_PADDING * Math.max(bounds.halfH / t, bounds.halfW / (t * windowAspect()));
+    return { position: { x: center.x, y: center.y, z: distance }, target: { ...center, z: 0 } };
+  }
+  const distance = distanceToFit(bounds.radius, camera, windowAspect(), FIT_PADDING);
+  const d = TIMELINE_VIEW_DIR;
+  const len = Math.hypot(d.x, d.y, d.z);
+  return {
+    position: {
+      x: center.x + (d.x / len) * distance,
+      y: center.y + (d.y / len) * distance,
+      z: center.z + (d.z / len) * distance,
+    },
+    target: { ...center },
+  };
+}
 
 export interface ResearchGraphHandle {
   /** Center the view on a cluster's average position and zoom so all of it fits. */
@@ -36,6 +86,7 @@ export interface ResearchGraphHandle {
 interface Props {
   nodes: PaperNode[];
   links: RawLink[];
+  mode: ViewMode;
   clusterTitle: Record<number, string>;
   selectedCluster: number | null;
   isVisible: (n: PaperNode) => boolean;
@@ -49,6 +100,7 @@ interface Props {
 export function ResearchGraph({
   nodes,
   links,
+  mode,
   clusterTitle,
   selectedCluster,
   isVisible,
@@ -151,42 +203,61 @@ export function ResearchGraph({
   );
 
   // ---- Camera --------------------------------------------------------------
-  // Pan bound: the visible area may go past the (padded) map edges by PAN_SLACK of a half-view.
-  // The further you zoom in, the further from the center you can go, and you can never
-  // pan far enough to lose the map entirely.
+  // Flat mode keeps the camera square to the map, so "distance" is just camera.position.z and
+  // panning is clamped in x/y. Timeline mode lets the camera orbit, so neither holds: distance
+  // is measured to the orbit target, and it's the target that gets kept inside the map.
   const clampPan = useCallback(() => {
     const graph = fgRef.current;
     if (!graph || flightRef.current?.isFlying()) return; // the fly-to animation drives the camera
     const camera = graph.camera() as PerspectiveCamera; //  itself; clamping mid-flight causes jitter
     const controls = graph.controls() as OrbitLikeControls;
-    const viewHalfH = camera.position.z * tanHalfFov(camera);
-    const viewHalfW = viewHalfH * windowAspect();
-    const roomX = Math.max(0, bounds.halfW * FIT_PADDING - viewHalfW) + PAN_SLACK * viewHalfW;
-    const roomY = Math.max(0, bounds.halfH * FIT_PADDING - viewHalfH) + PAN_SLACK * viewHalfH;
-    const x = Math.min(bounds.center.x + roomX, Math.max(bounds.center.x - roomX, controls.target.x));
-    const y = Math.min(bounds.center.y + roomY, Math.max(bounds.center.y - roomY, controls.target.y));
-    if (x === controls.target.x && y === controls.target.y) return;
-    // Keep the camera directly above its target so the view stays flat.
-    camera.position.x = controls.target.x = x;
-    camera.position.y = controls.target.y = y;
-  }, [bounds]);
+    const { center } = bounds;
 
-  /** Camera distance at which the whole map just fits the window, given the camera's field of view. */
+    if (mode === 'flat') {
+      // Pan bound: the visible area may go past the (padded) map edges by PAN_SLACK of a half-view.
+      // The further you zoom in, the further from the center you can go, and you can never
+      // pan far enough to lose the map entirely.
+      const viewHalfH = camera.position.z * tanHalfFov(camera);
+      const viewHalfW = viewHalfH * windowAspect();
+      const roomX = Math.max(0, bounds.halfW * FIT_PADDING - viewHalfW) + PAN_SLACK * viewHalfW;
+      const roomY = Math.max(0, bounds.halfH * FIT_PADDING - viewHalfH) + PAN_SLACK * viewHalfH;
+      const x = clamp(controls.target.x, center.x - roomX, center.x + roomX);
+      const y = clamp(controls.target.y, center.y - roomY, center.y + roomY);
+      if (x === controls.target.x && y === controls.target.y) return;
+      // Keep the camera directly above its target so the view stays flat.
+      camera.position.x = controls.target.x = x;
+      camera.position.y = controls.target.y = y;
+      return;
+    }
+
+    // Timeline mode: keep the point being orbited inside the map's bounding box (plus slack), and
+    // carry the camera along by the same delta so the viewing angle and zoom survive the clamp.
+    const slack = 1 + PAN_SLACK;
+    const dx = clamp(controls.target.x, center.x - bounds.halfW * slack, center.x + bounds.halfW * slack) - controls.target.x;
+    const dy = clamp(controls.target.y, center.y - bounds.halfH * slack, center.y + bounds.halfH * slack) - controls.target.y;
+    const dz = clamp(controls.target.z, center.z - bounds.halfD * slack, center.z + bounds.halfD * slack) - controls.target.z;
+    if (dx === 0 && dy === 0 && dz === 0) return;
+    controls.target.set(controls.target.x + dx, controls.target.y + dy, controls.target.z + dz);
+    camera.position.set(camera.position.x + dx, camera.position.y + dy, camera.position.z + dz);
+  }, [bounds, mode]);
+
+  /** Snap (no animation) to the view that frames the whole map. */
   const fitToWindow = useCallback(() => {
     const graph = fgRef.current;
     if (!graph) return;
     flightRef.current?.cancel();
     const camera = graph.camera() as PerspectiveCamera;
     const controls = graph.controls() as OrbitLikeControls;
-    const t = tanHalfFov(camera);
-    const distance = FIT_PADDING * Math.max(bounds.halfH / t, bounds.halfW / (t * windowAspect()));
-    graph.cameraPosition(
-      { x: bounds.center.x, y: bounds.center.y, z: distance },
-      { x: bounds.center.x, y: bounds.center.y, z: 0 },
+    const pose = homePose(bounds, camera, mode);
+    graph.cameraPosition(pose.position, pose.target);
+    // Can't zoom out past the whole map.
+    controls.maxDistance = Math.hypot(
+      pose.position.x - pose.target.x,
+      pose.position.y - pose.target.y,
+      pose.position.z - pose.target.z,
     );
-    controls.maxDistance = distance; // can't zoom out past the full map
-    controls.minDistance = distance * 0.05;
-  }, [bounds]);
+    controls.minDistance = controls.maxDistance * 0.05;
+  }, [bounds, mode]);
 
   const flyToCluster = useCallback(
     (id: number) => {
@@ -201,38 +272,70 @@ export function ResearchGraph({
 
       const cx = pts.reduce((s, n) => s + n.x, 0) / pts.length;
       const cy = pts.reduce((s, n) => s + n.y, 0) / pts.length;
-      // Half-extent around the mean, so every member is inside the view; + radius so big dots aren't clipped.
-      let extX = CLUSTER_MIN_EXTENT;
-      let extY = CLUSTER_MIN_EXTENT;
-      for (const n of pts) {
-        extX = Math.max(extX, Math.abs(n.x - cx) + n.radius);
-        extY = Math.max(extY, Math.abs(n.y - cy) + n.radius);
-      }
+      const cz = pts.reduce((s, n) => s + n.z, 0) / pts.length;
 
+      const camera = graph.camera() as PerspectiveCamera;
+      const controls = graph.controls() as OrbitLikeControls;
       // The details panel covers the right edge on wide screens; fit and center within the space left of it.
       const reserved = window.innerWidth >= 900 ? DETAILS_PANEL_PX : 0;
       const viewAspect = (window.innerWidth - reserved) / window.innerHeight;
-      const camera = graph.camera() as PerspectiveCamera;
-      const controls = graph.controls() as OrbitLikeControls;
       const t = tanHalfFov(camera);
-      const wanted = CLUSTER_FIT_PADDING * Math.max(extY / t, extX / (t * viewAspect));
-      const distance = Math.min(controls.maxDistance, Math.max(controls.minDistance, wanted));
 
-      // Shift the camera right so the cluster lands in the middle of the uncovered area.
+      let distance: number;
+      if (mode === 'flat') {
+        // Half-extent around the mean, so every member is inside the view; + radius so big dots aren't clipped.
+        let extX = CLUSTER_MIN_EXTENT;
+        let extY = CLUSTER_MIN_EXTENT;
+        for (const n of pts) {
+          extX = Math.max(extX, Math.abs(n.x - cx) + n.radius);
+          extY = Math.max(extY, Math.abs(n.y - cy) + n.radius);
+        }
+        distance = CLUSTER_FIT_PADDING * Math.max(extY / t, extX / (t * viewAspect));
+      } else {
+        // Tilted view, so fit the sphere around the cluster rather than an axis-aligned box.
+        let ext = CLUSTER_MIN_EXTENT;
+        for (const n of pts) {
+          ext = Math.max(ext, Math.hypot(n.x - cx, n.y - cy, n.z - cz) + n.radius);
+        }
+        distance = distanceToFit(ext, camera, viewAspect, CLUSTER_FIT_PADDING);
+      }
+      distance = clamp(distance, controls.minDistance, controls.maxDistance);
+
+      // Shift the view right so the cluster lands in the middle of the uncovered area. In flat
+      // mode "right" is +x; once the camera can orbit it's the camera's own right vector.
       const unitsPerPx = (2 * distance * t) / window.innerHeight;
-      flight.flyTo({ x: cx + (reserved / 2) * unitsPerPx, y: cy, z: distance }, FLY_MS);
+      const nudge = (reserved / 2) * unitsPerPx;
+      const target =
+        mode === 'flat'
+          ? { x: cx + nudge, y: cy, z: 0 }
+          : (() => {
+              const right = new Vector3().setFromMatrixColumn(camera.matrixWorld, 0).normalize();
+              return { x: cx + right.x * nudge, y: cy + right.y * nudge, z: cz + right.z * nudge };
+            })();
+
+      // Keep looking from wherever the user has rotated to; only move and zoom.
+      const dir = mode === 'flat' ? { x: 0, y: 0, z: 1 } : viewDirection(camera, controls);
+      flight.flyTo(
+        {
+          target,
+          position: {
+            x: target.x + dir.x * distance,
+            y: target.y + dir.y * distance,
+            z: target.z + dir.z * distance,
+          },
+        },
+        FLY_MS,
+      );
     },
-    [nodes],
+    [nodes, mode],
   );
 
   const resetView = useCallback(() => {
     const graph = fgRef.current;
     const flight = flightRef.current;
     if (!graph || !flight) return;
-    const controls = graph.controls() as OrbitLikeControls;
-    // maxDistance is the distance at which the whole map fits, set by fitToWindow().
-    flight.flyTo({ x: bounds.center.x, y: bounds.center.y, z: controls.maxDistance }, FLY_MS);
-  }, [bounds]);
+    flight.flyTo(homePose(bounds, graph.camera() as PerspectiveCamera, mode), FLY_MS);
+  }, [bounds, mode]);
 
   useImperativeHandle(ref, () => ({ flyToCluster, resetView }), [flyToCluster, resetView]);
 
@@ -245,26 +348,39 @@ export function ResearchGraph({
     const flight = createFlightController(camera, controls);
     flightRef.current = flight;
 
-    // Flat map: look straight down the z-axis. No rotating; drag to pan, scroll to zoom.
-    controls.enableRotate = false;
     controls.enablePan = true;
-    controls.screenSpacePanning = true; // pan moves in the screen plane (= the map plane here)
-    // Three.js MOUSE / TOUCH enum values: MOUSE.PAN = 2, MOUSE.DOLLY = 1, TOUCH.PAN = 1, TOUCH.DOLLY_PAN = 2
-    controls.mouseButtons = { LEFT: 2, MIDDLE: 1, RIGHT: 2 };
-    controls.touches = { ONE: 1, TWO: 2 };
-    controls.addEventListener('change', clampPan); // fires on every pan and zoom
+    controls.screenSpacePanning = true; // pan moves in the screen plane
+    if (mode === 'flat') {
+      // Look straight down the z-axis. No rotating; drag to pan, scroll to zoom.
+      controls.enableRotate = false;
+      controls.mouseButtons = { LEFT: MOUSE.PAN, MIDDLE: MOUSE.DOLLY, RIGHT: MOUSE.PAN };
+      controls.touches = { ONE: TOUCH.PAN, TWO: TOUCH.DOLLY_PAN };
+    } else {
+      // The whole point of the timeline is seeing the map from an angle, so drag now orbits
+      // and panning moves to the right button.
+      controls.enableRotate = true;
+      controls.mouseButtons = { LEFT: MOUSE.ROTATE, MIDDLE: MOUSE.DOLLY, RIGHT: MOUSE.PAN };
+      controls.touches = { ONE: TOUCH.ROTATE, TWO: TOUCH.DOLLY_PAN };
+    }
+    controls.addEventListener('change', clampPan); // fires on every pan, orbit and zoom
 
     const cancelFlight = () => flight.cancel();
     const canvas = graph.renderer().domElement;
     canvas.addEventListener('pointerdown', cancelFlight);
     canvas.addEventListener('wheel', cancelFlight, { passive: true });
 
-    // The library's built-in hint still describes rotating, which is turned off.
+    // The library's built-in hint doesn't match either of our control schemes.
     const navHint = document.querySelector('.scene-nav-info');
-    if (navHint) navHint.textContent = 'Left or Right-click: pan, Mouse-wheel/middle-click: zoom';
+    if (navHint) {
+      navHint.textContent =
+        mode === 'flat'
+          ? 'Left or Right-click: pan, Mouse-wheel/middle-click: zoom'
+          : 'Left-click: rotate, Right-click: pan, Mouse-wheel/middle-click: zoom';
+    }
 
-    // Handy for poking at things from the browser console while we build.
-    (window as unknown as { graph: unknown }).graph = graph;
+    // Handy for poking at things from the browser console while we build. The React ref exposes
+    // the library's methods but not its data, so hand over the node array too.
+    Object.assign(window, { graph, graphNodes: nodes });
 
     return () => {
       controls.removeEventListener('change', clampPan);
@@ -272,9 +388,9 @@ export function ResearchGraph({
       canvas.removeEventListener('wheel', cancelFlight);
       flightRef.current = null;
     };
-  }, [clampPan]);
+  }, [clampPan, mode, nodes]);
 
-  // Initial fit, and again whenever the window changes size.
+  // Frame the map on load, on resize, and whenever the view mode changes.
   useEffect(() => {
     fitToWindow();
     clampPan();

@@ -1,16 +1,22 @@
-// Nudges overlapping circles apart in x/y while keeping each one as close as possible to its
+// Nudges overlapping spheres apart in x/y while keeping each one as close as possible to its
 // original (UMAP) position. Run once after node radii are known; it edits n.x / n.y in place.
 //
 // How it works, each round:
-//   1. Push apart every pair of circles that overlap. The smaller circle moves further, so the
+//   1. Push apart every pair of spheres that overlap. The smaller one moves further, so the
 //      biggest papers stay closest to where the ML put them.
-//   2. Pull every circle slightly back toward its original spot, so clusters don't drift or balloon.
+//   2. Pull every sphere slightly back toward its original spot, so clusters don't drift or balloon.
 // After the rounds, a few pure separation passes squeeze out any leftover overlap.
 // Deterministic: same input always gives the same layout.
+//
+// z is read but never written. In timeline mode it carries the publication date, which the
+// proposal wants kept undistorted, so two papers far enough apart in time already count as
+// separated and need no nudge at all. In flat mode every z is 0 and this reduces exactly to
+// the 2D circle-packing it replaced.
 
 interface Positioned {
   x: number;
   y: number;
+  z: number;
   radius: number;
 }
 
@@ -40,6 +46,7 @@ export function resolveOverlaps(
   const hy = Float64Array.from(nodes, (n) => n.y);
   const x = Float64Array.from(hx);
   const y = Float64Array.from(hy);
+  const z = Float64Array.from(nodes, (n) => n.z); // fixed: the timeline axis
   const r = Float64Array.from(nodes, (n) => n.radius);
   let maxRadius = 0;
   for (let i = 0; i < count; i++) if (r[i] > maxRadius) maxRadius = r[i];
@@ -68,10 +75,15 @@ export function resolveOverlaps(
           if (!bucket) continue;
           for (const j of bucket) {
             if (j <= i) continue; // handle each pair once
+            const minDist = r[i] + r[j] + padding;
+            const dz = z[i] - z[j];
+            if (Math.abs(dz) >= minDist) continue; // already clear of each other along the timeline
+            // Separation still owed in the xy plane once the gap in z is accounted for.
+            const needXY = Math.sqrt(minDist * minDist - dz * dz);
             let dx = x[i] - x[j];
             let dy = y[i] - y[j];
             let d = Math.hypot(dx, dy);
-            const overlap = r[i] + r[j] + padding - d;
+            const overlap = needXY - d;
             if (overlap <= 0) continue;
             if (d < 1e-9) {
               dx = Math.cos(i * GOLDEN);
@@ -121,7 +133,7 @@ export function resolveOverlaps(
     overlaps = 0;
     for (let i = 0; i < count; i++) {
       for (let j = i + 1; j < count; j++) {
-        if (Math.hypot(x[i] - x[j], y[i] - y[j]) < r[i] + r[j] - 0.05) overlaps++;
+        if (Math.hypot(x[i] - x[j], y[i] - y[j], z[i] - z[j]) < r[i] + r[j] - 0.05) overlaps++;
       }
     }
   }

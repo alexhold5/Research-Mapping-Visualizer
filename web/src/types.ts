@@ -1,5 +1,12 @@
 import type { Mesh } from 'three';
 
+/**
+ * How the map is laid out.
+ *   flat     - every paper at z = 0, viewed straight down. x/y is the UMAP topic map.
+ *   timeline - z is the publication date, so the map becomes a chronological landscape.
+ */
+export type ViewMode = 'flat' | 'timeline';
+
 /** A node exactly as `export_web_data.py` writes it into graph.json. */
 export interface RawNode {
   id: string;

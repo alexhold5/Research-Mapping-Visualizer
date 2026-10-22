@@ -2,8 +2,10 @@
 // Layout constants (tweak these to change how the landscape looks)
 // ---------------------------------------------------------------------------
 export const XY_SCALE = 300; // UMAP coords arrive normalized to [-1, 1]; this sets world size
-export const USE_TIMELINE = false; // false = flat 2D map (z = 0). true = z-axis is publication date.
-export const Z_PER_YEAR = 12; // world units per year along the timeline axis (only when USE_TIMELINE)
+export const Z_PER_YEAR = 12; // world units per year along the timeline axis (timeline mode only)
+/** Camera direction for the timeline view, as an offset from the target. Tilted up and to the
+ *  right so the time axis reads as depth instead of hiding behind the map. */
+export const TIMELINE_VIEW_DIR = { x: 0.55, y: 0.3, z: 1 };
 export const FIT_PADDING = 1.08; // >1 leaves a margin around the map when fitting it to the window
 export const CLUSTER_FIT_PADDING = 1.25; // >1 leaves a margin around a cluster when flying to it
 export const CLUSTER_MIN_EXTENT = 30; // never zoom in tighter than this (world units around the cluster center)

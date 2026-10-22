@@ -417,3 +417,39 @@ html, body {
   font-size: 12px !important;
   line-height: 1.35;
 }
+
+/* ---- Flat / timeline view switch ---- */
+#view-mode {
+  display: flex;
+  gap: 4px;
+  margin-top: 10px;
+  padding: 3px;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 7px;
+  pointer-events: auto; /* #hud ignores the mouse; this opts back in */
+}
+
+#view-mode button {
+  flex: 1;
+  padding: 5px 8px;
+  background: none;
+  border: 0;
+  border-radius: 5px;
+  color: #8b92a5;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+#view-mode button:hover {
+  color: #fff;
+}
+
+#view-mode button.active {
+  background: rgba(255, 255, 255, 0.14);
+  color: #fff;
+}
+
+#view-mode button:focus-visible {
+  outline: 2px solid #8b92a5;
+}

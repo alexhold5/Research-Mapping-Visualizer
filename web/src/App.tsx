@@ -3,10 +3,10 @@ import { DetailsPanel } from './components/DetailsPanel';
 import { Hud } from './components/Hud';
 import { ResearchGraph, type ResearchGraphHandle } from './components/ResearchGraph';
 import { Timeline } from './components/Timeline';
-import { useGraphData } from './hooks/useGraphData';
+import { useGraphData, usePreparedNodes } from './hooks/useGraphData';
 import { usePaperDetail } from './hooks/usePaperDetail';
 import { useWindowSize } from './hooks/useWindowSize';
-import type { PaperNode } from './types';
+import type { PaperNode, ViewMode } from './types';
 
 const NO_CLUSTERS: never[] = [];
 
@@ -15,6 +15,7 @@ export function App() {
   const { width, height } = useWindowSize();
   const graphRef = useRef<ResearchGraphHandle>(null);
 
+  const [mode, setMode] = useState<ViewMode>('flat');
   const [selectedCluster, setSelectedCluster] = useState<number | null>(null);
   const [selectedPaper, setSelectedPaper] = useState<PaperNode | null>(null);
   // null = the full range. Kept as an override so it resets cleanly and survives data loading.
@@ -23,6 +24,7 @@ export function App() {
   const detail = usePaperDetail(selectedPaper);
 
   const graph = state.status === 'ready' ? state.graph : null;
+  const nodes = usePreparedNodes(graph, mode);
   const clusters = graph?.clusters ?? NO_CLUSTERS;
   const clusterTitle = useMemo(
     () => Object.fromEntries(clusters.map((c) => [c.id, c.title])) as Record<number, string>,
@@ -39,10 +41,7 @@ export function App() {
     (n: PaperNode) => (n.year == null ? lo <= T0 && hi >= T1 : n.year >= lo && n.year <= hi),
     [lo, hi, T0, T1],
   );
-  const visibleCount = useMemo(
-    () => (graph ? graph.paperNodes.filter(isVisible).length : 0),
-    [graph, isVisible],
-  );
+  const visibleCount = useMemo(() => (nodes ? nodes.filter(isVisible).length : 0), [nodes, isVisible]);
 
   // ---- Interaction ---------------------------------------------------------
   const selectCluster = useCallback(
@@ -95,11 +94,12 @@ export function App() {
 
   return (
     <>
-      {graph && (
+      {graph && nodes && (
         <ResearchGraph
           ref={graphRef}
-          nodes={graph.paperNodes}
+          nodes={nodes}
           links={graph.links}
+          mode={mode}
           clusterTitle={clusterTitle}
           selectedCluster={selectedCluster}
           isVisible={isVisible}
@@ -115,6 +115,8 @@ export function App() {
         clusters={clusters}
         selectedCluster={selectedCluster}
         onSelectCluster={selectCluster}
+        mode={mode}
+        onModeChange={setMode}
         status={state.status === 'error' ? `Failed to load data: ${state.message}` : null}
       />
 
@@ -122,9 +124,9 @@ export function App() {
         <DetailsPanel node={selectedPaper} detail={detail} clusters={clusters} onClose={closeDetails} />
       )}
 
-      {graph && (
+      {graph && nodes && (
         <Timeline
-          nodes={graph.paperNodes}
+          nodes={nodes}
           yearMin={T0}
           yearMax={T1}
           lo={lo}
