@@ -4,47 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Research Map</title>
-    <link rel="stylesheet" href="/src/style.css" />
   </head>
   <body>
-    <div id="graph"></div>
-    <div id="hud">
-      <h1>Research Map</h1>
-      <p id="stats">Loading…</p>
-      <p class="hint">Position = topic similarity (UMAP) · color = cluster · size = influence</p>
-      <p class="hint">Scroll to zoom · drag to pan · click a paper to select its cluster</p>
-      <p id="selection" hidden></p>
-      <h2 id="clusters-heading">Clusters</h2>
-      <ul id="cluster-list"></ul>
-    </div>
-    <aside id="details" hidden aria-live="polite">
-      <button id="details-close" type="button" aria-label="Close details" title="Close (Esc)">×</button>
-      <h2 id="details-title"></h2>
-      <p id="details-meta"></p>
-      <div id="details-stats"></div>
-      <p id="details-cluster"></p>
-      <h3>Authors</h3>
-      <p id="details-authors"></p>
-      <h3>Abstract</h3>
-      <p id="details-abstract"></p>
-      <a id="details-link" target="_blank" rel="noopener noreferrer">View on arXiv ↗</a>
-    </aside>
-    <div id="timeline" hidden>
-      <div id="tl-head">
-        <button id="tl-mode" type="button" role="switch" aria-checked="false" title="Switch what the bars show">
-          <span class="sw"></span><span id="tl-mode-text">Paper volume</span>
-        </button>
-        <div id="tl-label"></div>
-        <button id="tl-reset" type="button" title="Show the whole map again and clear all selections and filters">Reset view</button>
-      </div>
-      <div id="tl-track">
-        <div id="tl-bars"></div>
-        <div id="tl-range"></div>
-        <div class="tl-handle" id="tl-lo" title="Earliest date shown"></div>
-        <div class="tl-handle" id="tl-hi" title="Latest date shown"></div>
-      </div>
-      <div id="tl-ticks"></div>
-    </div>
-    <script type="module" src="/src/main.js"></script>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>

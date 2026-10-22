@@ -8,7 +8,31 @@
 // After the rounds, a few pure separation passes squeeze out any leftover overlap.
 // Deterministic: same input always gives the same layout.
 
-export function resolveOverlaps(nodes, { padding = 0.6, rounds = 200, pull = 0.03, finalPasses = 150 } = {}) {
+interface Positioned {
+  x: number;
+  y: number;
+  radius: number;
+}
+
+export interface LayoutOptions {
+  padding?: number;
+  rounds?: number;
+  pull?: number;
+  finalPasses?: number;
+}
+
+export interface LayoutStats {
+  /** Mean distance a node travelled from its UMAP position. */
+  moved: number;
+  maxMoved: number;
+  /** Overlaps remaining, or null when the O(n^2) check was skipped for being too slow. */
+  overlaps: number | null;
+}
+
+export function resolveOverlaps(
+  nodes: Positioned[],
+  { padding = 0.6, rounds = 200, pull = 0.03, finalPasses = 150 }: LayoutOptions = {},
+): LayoutStats {
   const count = nodes.length;
   if (count < 2) return { moved: 0, maxMoved: 0, overlaps: 0 };
 
@@ -17,13 +41,16 @@ export function resolveOverlaps(nodes, { padding = 0.6, rounds = 200, pull = 0.0
   const x = Float64Array.from(hx);
   const y = Float64Array.from(hy);
   const r = Float64Array.from(nodes, (n) => n.radius);
-  const cell = 2 * Math.max(...r) + padding; // any overlapping pair is in the same or an adjacent cell
+  let maxRadius = 0;
+  for (let i = 0; i < count; i++) if (r[i] > maxRadius) maxRadius = r[i];
+  const cell = 2 * maxRadius + padding; // any overlapping pair is in the same or an adjacent cell
   const GOLDEN = 2.399963; // used to pick a direction for circles sitting exactly on top of each other
 
-  // Returns the deepest overlap found (0 when everything is clear).
-  function separate() {
-    const grid = new Map();
-    const key = (cx, cy) => (cx + 50000) * 100000 + (cy + 50000);
+  const key = (cx: number, cy: number) => (cx + 50000) * 100000 + (cy + 50000);
+
+  /** Returns the deepest overlap found (0 when everything is clear). */
+  function separate(): number {
+    const grid = new Map<number, number[]>();
     for (let i = 0; i < count; i++) {
       const k = key(Math.floor(x[i] / cell), Math.floor(y[i] / cell));
       const bucket = grid.get(k);
@@ -46,7 +73,11 @@ export function resolveOverlaps(nodes, { padding = 0.6, rounds = 200, pull = 0.0
             let d = Math.hypot(dx, dy);
             const overlap = r[i] + r[j] + padding - d;
             if (overlap <= 0) continue;
-            if (d < 1e-9) { dx = Math.cos(i * GOLDEN); dy = Math.sin(i * GOLDEN); d = 1; }
+            if (d < 1e-9) {
+              dx = Math.cos(i * GOLDEN);
+              dy = Math.sin(i * GOLDEN);
+              d = 1;
+            }
             const nx = dx / d;
             const ny = dy / d;
             const share = (r[j] * r[j]) / (r[i] * r[i] + r[j] * r[j]); // fraction of the move that i takes
@@ -83,8 +114,9 @@ export function resolveOverlaps(nodes, { padding = 0.6, rounds = 200, pull = 0.0
     nodes[i].x = x[i];
     nodes[i].y = y[i];
   }
-  // Brute-force check of the result; skipped for big datasets where n² would be slow.
-  let overlaps = null;
+
+  // Brute-force check of the result; skipped for big datasets where n^2 would be slow.
+  let overlaps: number | null = null;
   if (count <= 5000) {
     overlaps = 0;
     for (let i = 0; i < count; i++) {
