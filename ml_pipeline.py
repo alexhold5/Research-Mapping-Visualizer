@@ -93,36 +93,36 @@ def compute_hdbscan_clusters(coords_2d, min_cluster_size=300):
     
     """Density-based spatial clustering for unstructured semantic groupings."""
     print("Computing HDBSCAN density-based clusters...")
-    clusterer = hdbscan.HDBSCAN(
-        min_cluster_size=min_cluster_size,
-        metric='euclidean',
-        cluster_selection_method='leaf',
-        core_dist_n_jobs=-1,
-        min_samples=5
-    )
-    return clusterer.fit_predict(coords_2d)
-
     # clusterer = hdbscan.HDBSCAN(
-    #     min_cluster_size=1000,
-    #     min_samples=15,
+    #     min_cluster_size=min_cluster_size,
+    #     metric='euclidean',
     #     cluster_selection_method='leaf',
-    #     prediction_data=True,      # Required for soft clustering / membership queries
-    #     metric='euclidean'
+    #     core_dist_n_jobs=-1,
+    #     min_samples=5
     # )
-    # labels = clusterer.fit_predict(umap_embeddings)
+    # return clusterer.fit_predict(coords_2d)
 
-    # # 2. Calculate membership probabilities for all points
-    # soft_clusters = hdbscan.all_points_membership_vectors(clusterer)
+    clusterer = hdbscan.HDBSCAN(
+        min_cluster_size=500,
+        min_samples=10,
+        cluster_selection_method='leaf',
+        prediction_data=True,      # Required for soft clustering / membership queries
+        metric='euclidean'
+    )
+    labels = clusterer.fit_predict(umap_embeddings)
 
-    # # 3. Assign noise points (-1) to their highest-probability cluster
-    # # (Optional threshold: e.g., only assign if probability > 0.1)
-    # reassigned_labels = labels.copy()
-    # for i in range(len(labels)):
-    #     if labels[i] == -1:
-    #         probs = soft_clusters[i]
-    #         if np.max(probs) > 0.05:  # Soft threshold to avoid completely lost outliers
-    #             reassigned_labels[i] = np.argmax(probs)
-    # return reassigned_labels
+    # 2. Calculate membership probabilities for all points
+    soft_clusters = hdbscan.all_points_membership_vectors(clusterer)
+
+    # 3. Assign noise points (-1) to their highest-probability cluster
+    # (Optional threshold: e.g., only assign if probability > 0.1)
+    reassigned_labels = labels.copy()
+    for i in range(len(labels)):
+        if labels[i] == -1:
+            probs = soft_clusters[i]
+            if np.max(probs) > 0.05:  # Soft threshold to avoid completely lost outliers
+                reassigned_labels[i] = np.argmax(probs)
+    return reassigned_labels
 
 
 
