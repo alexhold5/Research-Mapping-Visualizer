@@ -109,7 +109,7 @@ def compute_hdbscan_clusters(coords_2d, min_cluster_size=300):
         prediction_data=True,      # Required for soft clustering / membership queries
         metric='euclidean'
     )
-    labels = clusterer.fit_predict(umap_embeddings)
+    labels = clusterer.fit_predict(coords_2d)
 
     # 2. Calculate membership probabilities for all points
     soft_clusters = hdbscan.all_points_membership_vectors(clusterer)
