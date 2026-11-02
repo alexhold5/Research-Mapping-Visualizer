@@ -424,7 +424,7 @@ def create_snapshot(df, snapshot_year=None, max_titles_to_label=15, output_image
     plt.close()
 
 if __name__ == "__main__":
-    df = run_pipeline("arXiv_scientific_dataset_with_citations.csv", embeddings=None)
+    df = run_pipeline("arXiv_scientific_dataset_with_citations.csv", embeddings=None) # Embeddings will save to a file called scibert_embeddings.npy. Reuse embeddings by changing None to that
 
     graph_snapshot = create_snapshot(
         df,
