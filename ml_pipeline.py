@@ -279,7 +279,7 @@ def calculate_influence_scores(df, citation_col='citations', graph=None):
 # -----------------------------------------------------------------------------
 # MAIN PIPELINE EXECUTION (YOUR MODIFIED VERSION)
 # -----------------------------------------------------------------------------
-def run_pipeline(csv_path="arXiv_scientific_dataset.csv"):
+def run_pipeline(csv_path="arXiv_scientific_dataset.csv", embeddings=None):
     # Load dataset
     print(f"Loading data from {csv_path}...")
     df = pd.read_csv(csv_path)
@@ -296,18 +296,23 @@ def run_pipeline(csv_path="arXiv_scientific_dataset.csv"):
 
     # Concatenate title + abstract for rich contextual representations
     df['text_for_embedding'] = (title + ". " + abstract).str.strip()
-    
-    # 1. Generate Embeddings
-    tokenizer, model = load_scibert()
-    t1 = time.perf_counter()
-    
-    scibert_embeddings = extract_scibert_embeddings(
-        df['text_for_embedding'].tolist(),
-        tokenizer,
-        model
-    )
-    t2 = time.perf_counter()
-    print(f"SciBERT Embedding Generation Time: {t2-t1:.2f}s")
+
+    if embeddings is None:
+        # 1. Generate Embeddings
+        tokenizer, model = load_scibert()
+        t1 = time.perf_counter()
+        
+        scibert_embeddings = extract_scibert_embeddings(
+            df['text_for_embedding'].tolist(),
+            tokenizer,
+            model
+        )
+        t2 = time.perf_counter()
+        print(f"SciBERT Embedding Generation Time: {t2-t1:.2f}s")
+
+        np.save("scibert_embeddings.npy", scibert_embeddings)
+    else:
+        scibert_embeddings = np.load("scibert_embeddings.npy")
 
     # 2. Dimensionality Reduction (768D -> 2D)
     spatial_coords_2d = reduce_dimensions_umap(scibert_embeddings)
@@ -419,7 +424,7 @@ def create_snapshot(df, snapshot_year=None, max_titles_to_label=15, output_image
     plt.close()
 
 if __name__ == "__main__":
-    df = run_pipeline("arXiv_scientific_dataset_with_citations.csv")
+    df = run_pipeline("arXiv_scientific_dataset_with_citations.csv", embeddings=None)
 
     graph_snapshot = create_snapshot(
         df,
