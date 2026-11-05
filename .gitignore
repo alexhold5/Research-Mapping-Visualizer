@@ -5,3 +5,6 @@ dist/
 
 # Raw dataset (478 MB, over GitHub's 100 MB file limit); download it from Kaggle instead
 /arXiv_scientific_dataset_with_citations.csv
+
+# Python
+__pycache__/
