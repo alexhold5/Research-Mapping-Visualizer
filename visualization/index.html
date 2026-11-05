@@ -1,0 +1,471 @@
+<meta charset="utf-8">
+<title>arXiv Cluster Dynamics</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one reading column; summary strip, then growth-vs-maturity plot,
+   a map with a year scrubber, small multiples of yearly share, and the full table. */
+:root {
+  --page: #f6f7f9;
+  --surface: #fcfcfb;
+  --ink: #101317;
+  --ink-2: #4c525c;
+  --muted: #858a93;
+  --grid: #e3e5e9;
+  --axis: #c4c8cf;
+  --ring: rgba(16, 19, 23, 0.10);
+  --up: #2a78d6;            /* expanding pole */
+  --down: #e34948;          /* contracting pole */
+  --mid: #9a9ea6;           /* stable: neutral midpoint */
+  --up-wash: rgba(42, 120, 214, 0.10);
+  --down-wash: rgba(227, 73, 72, 0.10);
+  --mid-wash: rgba(133, 138, 147, 0.12);
+  --focus: #2a78d6;
+  --font-ui: "Instrument Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-data: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --page: #0e1013; --surface: #181a1e; --ink: #eef0f3; --ink-2: #c0c4cb; --muted: #8b9099;
+    --grid: #2a2d33; --axis: #3a3e45; --ring: rgba(255, 255, 255, 0.10);
+    --up: #3987e5; --down: #e66767; --mid: #7d828b;
+    --up-wash: rgba(57, 135, 229, 0.16); --down-wash: rgba(230, 103, 103, 0.16); --mid-wash: rgba(139, 144, 153, 0.16);
+    --focus: #3987e5; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --page: #0e1013; --surface: #181a1e; --ink: #eef0f3; --ink-2: #c0c4cb; --muted: #8b9099;
+  --grid: #2a2d33; --axis: #3a3e45; --ring: rgba(255, 255, 255, 0.10);
+  --up: #3987e5; --down: #e66767; --mid: #7d828b;
+  --up-wash: rgba(57, 135, 229, 0.16); --down-wash: rgba(230, 103, 103, 0.16); --mid-wash: rgba(139, 144, 153, 0.16);
+  --focus: #3987e5; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--page); color: var(--ink); font-family: var(--font-ui); font-size: 15px; line-height: 1.5;
+}
+.wrap {
+  max-width: 1120px; margin: 0 auto;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 32px 64px;
+  display: flex; flex-direction: column; gap: 28px;
+}
+h1, h2, h3 { margin: 0; text-wrap: balance; }
+h1 { font-size: clamp(26px, 4vw, 34px); font-weight: 700; letter-spacing: -0.02em; line-height: 1.15; }
+h2 { font-size: 18px; font-weight: 600; letter-spacing: -0.01em; }
+p { margin: 0; }
+.eyebrow { font-family: var(--font-data); font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.lede { color: var(--ink-2); max-width: 68ch; }
+.num { font-family: var(--font-data); font-variant-numeric: tabular-nums; }
+
+header { display: flex; flex-direction: column; gap: 10px; }
+.summary { display: flex; flex-wrap: wrap; gap: 8px 20px; align-items: center; color: var(--ink-2); font-size: 14px; }
+.summary b { color: var(--ink); font-weight: 600; }
+
+.pill {
+  display: inline-flex; align-items: center; gap: 5px; padding: 1px 8px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; white-space: nowrap; color: var(--ink);
+}
+.pill::before { font-size: 9px; }
+.pill.expanding { background: var(--up-wash); } .pill.expanding::before { content: "▲"; color: var(--up); }
+.pill.contracting { background: var(--down-wash); } .pill.contracting::before { content: "▼"; color: var(--down); }
+.pill.stable, .pill.noise { background: var(--mid-wash); } .pill.stable::before, .pill.noise::before { content: "●"; color: var(--mid); }
+
+.panel {
+  background: var(--surface); border: 1px solid var(--ring); border-radius: 10px;
+  padding: 20px; display: flex; flex-direction: column; gap: 14px; min-width: 0;
+}
+.panel-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px 16px; align-items: baseline; }
+.panel-head p { color: var(--ink-2); font-size: 14px; max-width: 70ch; }
+.legend { display: flex; flex-wrap: wrap; gap: 6px 14px; font-size: 13px; color: var(--ink-2); }
+
+.two-col { display: grid; grid-template-columns: minmax(0, 1.15fr) minmax(0, 1fr); gap: 20px; }
+@media (max-width: 860px) { .two-col { grid-template-columns: minmax(0, 1fr); } }
+
+svg text { fill: var(--muted); font-family: var(--font-data); font-size: 11px; }
+svg .label { fill: var(--ink-2); font-family: var(--font-ui); font-size: 12px; font-weight: 500; }
+svg .gridline { stroke: var(--grid); stroke-width: 1; }
+svg .axisline { stroke: var(--axis); stroke-width: 1; }
+svg .ref { stroke: var(--axis); stroke-width: 1; }
+.bubble { cursor: pointer; stroke: var(--surface); stroke-width: 2; }
+.bubble:focus { outline: none; stroke: var(--ink); }
+.bubble.dim { opacity: 0.25; }
+
+.map-wrap { position: relative; width: 100%; aspect-ratio: 1 / 1; max-width: 100%; }
+.map-wrap canvas { width: 100%; height: 100%; display: block; border-radius: 6px; }
+.scrub { display: flex; align-items: center; gap: 12px; }
+.scrub input[type="range"] { flex: 1; min-width: 0; accent-color: var(--up); }
+.scrub .year { font-family: var(--font-data); font-size: 20px; font-weight: 500; min-width: 4ch; }
+button {
+  font: inherit; font-size: 13px; font-weight: 600; color: var(--ink); background: var(--page);
+  border: 1px solid var(--ring); border-radius: 6px; padding: 5px 12px; cursor: pointer;
+}
+button:hover { background: var(--grid); }
+button:focus-visible, input:focus-visible, .card:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.map-note { font-size: 13px; color: var(--ink-2); }
+
+.multiples { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+.card {
+  border: 1px solid var(--ring); border-radius: 8px; padding: 12px 12px 8px; display: flex; flex-direction: column;
+  gap: 6px; cursor: pointer; background: var(--surface); min-width: 0;
+}
+.card.selected { border-color: var(--ink-2); box-shadow: 0 0 0 1px var(--ink-2); }
+.card-top { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+.card h3 { font-size: 14px; font-weight: 600; line-height: 1.3; min-height: 2.6em; }
+.card .meta { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
+.card svg { width: 100%; height: 64px; display: block; overflow: visible; }
+
+.table-scroll { overflow-x: auto; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; min-width: 760px; }
+th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--grid); vertical-align: top; }
+th { font-weight: 600; color: var(--ink-2); font-size: 12px; white-space: nowrap; }
+td.r, th.r { text-align: right; }
+tbody tr { cursor: pointer; }
+tbody tr:hover { background: var(--page); }
+tbody tr.selected { background: var(--mid-wash); }
+
+.tip {
+  position: fixed; pointer-events: none; z-index: 20; background: var(--surface); color: var(--ink);
+  border: 1px solid var(--ring); border-radius: 8px; padding: 8px 10px; font-size: 12px; max-width: 280px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.12); display: flex; flex-direction: column; gap: 2px;
+}
+.tip strong { font-family: var(--font-data); font-size: 14px; font-weight: 500; }
+.tip .t { color: var(--ink-2); }
+.state { color: var(--ink-2); padding: 40px 0; }
+footer { color: var(--muted); font-size: 13px; max-width: 75ch; display: flex; flex-direction: column; gap: 6px; }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <span class="eyebrow">Research Mapping Visualizer · cluster dynamics</span>
+    <h1>Which arXiv subfields are expanding, and which have matured?</h1>
+    <p class="lede">Each cluster comes from SciBERT embeddings of titles and abstracts, reduced with UMAP and grouped with HDBSCAN. Its volume is measured as its <b>share of all papers published that year</b>, so uneven sampling across years doesn't count as growth. Growth is the annual change in that share over the most recent years.</p>
+    <div class="summary" id="summary"><span class="state">Loading cluster data…</span></div>
+  </header>
+
+  <div class="two-col">
+    <section class="panel" aria-labelledby="quad-h">
+      <div class="panel-head">
+        <h2 id="quad-h">Growth vs. maturity</h2>
+        <div class="legend">
+          <span class="pill expanding">Expanding</span><span class="pill stable">Stable</span><span class="pill contracting">Contracting</span>
+        </div>
+      </div>
+      <p class="map-note" id="quad-note">Further right means the cluster's papers are more recent. Higher means its share of each year's papers is rising faster. Bubble area shows paper count. Select a cluster to follow it through the other views.</p>
+      <svg id="quad" role="img" aria-label="Scatter of clusters by mean publication year and annual share growth"></svg>
+    </section>
+
+    <section class="panel" aria-labelledby="map-h">
+      <div class="panel-head"><h2 id="map-h">Semantic map over time</h2></div>
+      <div class="scrub">
+        <button id="play" type="button" aria-label="Play timeline">Play</button>
+        <input id="year" type="range" aria-label="Publication year">
+        <span class="year num" id="year-label"></span>
+      </div>
+      <div class="map-wrap"><canvas id="map" aria-label="UMAP projection of sampled papers published up to the selected year"></canvas></div>
+      <p class="map-note" id="map-note">Bright points are papers published in the selected year. Faint points were published earlier.</p>
+    </section>
+  </div>
+
+  <section class="panel" aria-labelledby="mult-h">
+    <div class="panel-head">
+      <h2 id="mult-h">Share of each year's papers</h2>
+      <p>One panel per cluster, sorted by growth. Each panel has its own y-scale, labeled with its peak share. The shaded band marks the years used for the growth fit.</p>
+    </div>
+    <div class="multiples" id="multiples"></div>
+  </section>
+
+  <section class="panel" aria-labelledby="tbl-h">
+    <div class="panel-head"><h2 id="tbl-h">All clusters</h2></div>
+    <div class="table-scroll">
+      <table>
+        <thead><tr>
+          <th>Cluster</th><th>Status</th><th class="r">Growth / yr</th><th class="r">Share, prior</th>
+          <th class="r">Share, recent</th><th class="r">Mean year</th><th class="r">Papers</th><th>Top arXiv categories</th>
+        </tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <footer id="foot"></footer>
+</div>
+<div class="tip" id="tip" hidden></div>
+
+<script>
+(() => {
+  const SVGNS = "http://www.w3.org/2000/svg";
+  const $ = (id) => document.getElementById(id);
+  const css = (name) => getComputedStyle(document.documentElement).getPropertyValue(name).trim();
+  const pct = (v, d = 1) => (v * 100).toFixed(d) + "%";
+  const signed = (v) => (v >= 0 ? "+" : "−") + Math.abs(v * 100).toFixed(1) + "%";
+  const shortTitle = (t) => t.replace(/^Cluster\s+-?\d+:\s*/, "");
+  const statusLabel = { expanding: "Expanding", stable: "Stable", contracting: "Contracting", noise: "Unclustered" };
+  const statusVar = { expanding: "--up", contracting: "--down", stable: "--mid", noise: "--mid" };
+
+  let data, selected = null;
+  const tip = $("tip");
+
+  function el(tag, attrs = {}, parent) {
+    const n = document.createElementNS(SVGNS, tag);
+    for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, v);
+    if (parent) parent.appendChild(n);
+    return n;
+  }
+  function showTip(evt, lines) {
+    tip.replaceChildren();
+    lines.forEach(([cls, text]) => { const s = document.createElement(cls === "strong" ? "strong" : "span"); if (cls === "t") s.className = "t"; s.textContent = text; tip.appendChild(s); });
+    tip.hidden = false;
+    const r = tip.getBoundingClientRect();
+    let x = evt.clientX + 14, y = evt.clientY + 14;
+    if (x + r.width > innerWidth - 8) x = evt.clientX - r.width - 14;
+    if (y + r.height > innerHeight - 8) y = evt.clientY - r.height - 14;
+    tip.style.left = Math.max(8, x) + "px"; tip.style.top = Math.max(8, y) + "px";
+  }
+  const hideTip = () => { tip.hidden = true; };
+
+  function select(id) {
+    selected = selected === id ? null : id;
+    drawQuad(); drawMap(); syncSelection();
+  }
+
+  // ---------- summary ----------
+  function drawSummary() {
+    const s = $("summary"); s.replaceChildren();
+    const cs = data.clusters.filter((c) => c.status !== "noise");
+    const count = (st) => cs.filter((c) => c.status === st).length;
+    const add = (html) => { const span = document.createElement("span"); span.append(...html); s.appendChild(span); };
+    const b = (t) => { const x = document.createElement("b"); x.className = "num"; x.textContent = t; return x; };
+    add([b(data.params.n_papers.toLocaleString()), " papers"]);
+    add([b(cs.length), " clusters"]);
+    add([b(`${data.years[0]}–${data.years[data.years.length - 1]}`), " publication years"]);
+    for (const st of ["expanding", "stable", "contracting"]) {
+      const p = document.createElement("span"); p.className = "pill " + st; p.textContent = `${count(st)} ${statusLabel[st].toLowerCase()}`; s.appendChild(p);
+    }
+  }
+
+  // ---------- quadrant ----------
+  function drawQuad() {
+    const svg = $("quad"); svg.replaceChildren();
+    const W = svg.clientWidth || 560, H = Math.max(300, Math.min(440, W * 0.78));
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`); svg.setAttribute("height", H);
+    const m = { l: 48, r: 16, t: 12, b: 36 };
+    const cs = data.clusters.filter((c) => c.status !== "noise");
+    const xs = cs.map((c) => c.mean_year), ys = cs.map((c) => c.growth_rate);
+    const p = data.params;
+    let x0 = Math.floor(Math.min(...xs) - 0.5), x1 = Math.ceil(Math.max(...xs) + 0.5);
+    let y0 = Math.min(...ys, p.contracting_rate) - 0.05, y1 = Math.max(...ys, p.expanding_rate) + 0.05;
+    const X = (v) => m.l + ((v - x0) / (x1 - x0)) * (W - m.l - m.r);
+    const Y = (v) => H - m.b - ((v - y0) / (y1 - y0)) * (H - m.t - m.b);
+    const maxSize = Math.max(...cs.map((c) => c.size));
+    const R = (n) => 5 + 17 * Math.sqrt(n / maxSize);
+
+    // grid + ticks
+    const yStep = niceStep((y1 - y0) / 5);
+    for (let v = Math.ceil(y0 / yStep) * yStep; v <= y1 + 1e-9; v += yStep) {
+      el("line", { class: v === 0 ? "axisline" : "gridline", x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v) }, svg);
+      el("text", { x: m.l - 6, y: Y(v) + 4, "text-anchor": "end" }, svg).textContent = (v > 0 ? "+" : "") + Math.round(v * 100) + "%";
+    }
+    const xStep = Math.max(1, Math.ceil((x1 - x0) / 7));
+    for (let v = x0; v <= x1; v += xStep) el("text", { x: X(v), y: H - m.b + 18, "text-anchor": "middle" }, svg).textContent = v;
+    el("line", { class: "axisline", x1: m.l, x2: W - m.r, y1: H - m.b, y2: H - m.b }, svg);
+    el("text", { x: W - m.r, y: H - 4, "text-anchor": "end" }, svg).textContent = "mean publication year →";
+    el("text", { x: m.l + 6, y: m.t + 10, "text-anchor": "start" }, svg).textContent = "↑ annual change in share";
+
+    // thresholds
+    [[p.expanding_rate, `expanding ≥ +${Math.round(p.expanding_rate * 100)}%/yr`], [p.contracting_rate, `contracting ≤ ${Math.round(p.contracting_rate * 100)}%/yr`]].forEach(([v, t]) => {
+      el("line", { class: "ref", x1: m.l, x2: W - m.r, y1: Y(v), y2: Y(v), "stroke-opacity": 0.9 }, svg);
+      el("text", { x: W - m.r - 2, y: Y(v) - 5, "text-anchor": "end" }, svg).textContent = t;
+    });
+
+    // bubbles, largest first so small ones stay on top
+    const sorted = [...cs].sort((a, b) => b.size - a.size);
+    for (const c of sorted) {
+      const g = el("circle", {
+        class: "bubble" + (selected !== null && selected !== c.id ? " dim" : ""),
+        cx: X(c.mean_year), cy: Y(c.growth_rate), r: R(c.size), fill: css(statusVar[c.status]), "fill-opacity": 0.85,
+        tabindex: 0, role: "button", "aria-label": `${shortTitle(c.title)}: ${signed(c.growth_rate)} per year, mean year ${c.mean_year.toFixed(1)}`,
+      }, svg);
+      const lines = () => [["strong", signed(c.growth_rate) + " / yr"], ["", shortTitle(c.title)], ["t", `${statusLabel[c.status]} · mean year ${c.mean_year.toFixed(1)} · ${c.size} papers`], ["t", `share ${c.share_prior == null ? "–" : pct(c.share_prior)} → ${pct(c.share_recent)}`]];
+      g.addEventListener("pointermove", (e) => showTip(e, lines()));
+      g.addEventListener("pointerleave", hideTip);
+      g.addEventListener("focus", () => { const b = g.getBoundingClientRect(); showTip({ clientX: b.right, clientY: b.top }, lines()); });
+      g.addEventListener("blur", hideTip);
+      g.addEventListener("click", () => select(c.id));
+      g.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); select(c.id); } });
+    }
+
+    // direct labels: the two fastest-growing, the fastest-contracting, plus the selection
+    const labelIds = new Set();
+    [...cs].sort((a, b) => b.growth_rate - a.growth_rate).slice(0, 2).forEach((c) => labelIds.add(c.id));
+    const lo = [...cs].sort((a, b) => a.growth_rate - b.growth_rate)[0]; if (lo && lo.growth_rate < 0) labelIds.add(lo.id);
+    if (selected !== null) labelIds.add(selected);
+    for (const c of cs.filter((c) => labelIds.has(c.id))) {
+      const cx = X(c.mean_year), cy = Y(c.growth_rate), r = R(c.size);
+      const name = shortTitle(c.title).split(" / ")[0];
+      const right = cx < W * 0.6;
+      el("text", { class: "label", x: right ? cx + r + 5 : cx - r - 5, y: cy + 4, "text-anchor": right ? "start" : "end" }, svg).textContent = name;
+    }
+  }
+  function niceStep(raw) {
+    const p = Math.pow(10, Math.floor(Math.log10(raw))), f = raw / p;
+    return (f < 1.5 ? 1 : f < 3 ? 2 : f < 7 ? 5 : 10) * p;
+  }
+
+  // ---------- map ----------
+  let mapBounds = null;
+  function drawMap() {
+    const cv = $("map"), pts = data.points;
+    if (!pts.length) { $("map-note").textContent = "This dataset has no map coordinates."; return; }
+    const dpr = window.devicePixelRatio || 1, W = cv.clientWidth, H = cv.clientHeight;
+    cv.width = W * dpr; cv.height = H * dpr;
+    const ctx = cv.getContext("2d"); ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.fillStyle = css("--page"); ctx.fillRect(0, 0, W, H);
+    if (!mapBounds) {
+      let a = Infinity, b = -Infinity, c = Infinity, d = -Infinity;
+      for (const [x, y] of pts) { a = Math.min(a, x); b = Math.max(b, x); c = Math.min(c, y); d = Math.max(d, y); }
+      mapBounds = [a, b, c, d];
+    }
+    const [xa, xb, ya, yb] = mapBounds, pad = 12;
+    const s = Math.min((W - 2 * pad) / (xb - xa), (H - 2 * pad) / (yb - ya));
+    const ox = (W - s * (xb - xa)) / 2, oy = (H - s * (yb - ya)) / 2;
+    const year = +$("year").value;
+    const status = new Map(data.clusters.map((c) => [c.id, c.status]));
+    const color = { expanding: css("--up"), contracting: css("--down"), stable: css("--mid"), noise: css("--mid") };
+    const faint = css("--axis");
+    // earlier papers first (faint), then the selected year on top
+    for (const pass of [0, 1]) {
+      for (const [x, y, c, yr] of pts) {
+        if (yr > year) continue;
+        const current = yr === year;
+        if ((pass === 1) !== current) continue;
+        const dim = selected !== null && c !== selected;
+        ctx.globalAlpha = current ? (dim ? 0.15 : 0.9) : (dim ? 0.08 : (selected !== null ? 0.6 : 0.35));
+        ctx.fillStyle = current ? color[status.get(c) || "stable"] : (selected !== null && !dim ? css("--ink-2") : faint);
+        const px = ox + (x - xa) * s, py = H - (oy + (y - ya) * s);
+        ctx.beginPath(); ctx.arc(px, py, current ? 2.4 : 1.6, 0, Math.PI * 2); ctx.fill();
+      }
+    }
+    ctx.globalAlpha = 1;
+    const shown = pts.filter((p) => p[3] === year).length, total = pts.filter((p) => p[3] <= year).length;
+    $("year-label").textContent = year;
+    $("map-note").textContent = `${shown.toLocaleString()} sampled papers published in ${year} are shown bright, and ${(total - shown).toLocaleString()} earlier papers faint. Colors follow each cluster's growth status.`;
+  }
+  let timer = null;
+  function togglePlay() {
+    const r = $("year"), btn = $("play");
+    if (timer) { clearInterval(timer); timer = null; btn.textContent = "Play"; btn.setAttribute("aria-label", "Play timeline"); return; }
+    if (+r.value >= +r.max) r.value = r.min;
+    btn.textContent = "Pause"; btn.setAttribute("aria-label", "Pause timeline");
+    timer = setInterval(() => {
+      if (+r.value >= +r.max) { togglePlay(); return; }
+      r.value = +r.value + 1; drawMap();
+    }, 650);
+  }
+
+  // ---------- small multiples ----------
+  function drawMultiples() {
+    const host = $("multiples"); host.replaceChildren();
+    const years = data.years, win = data.params.window;
+    for (const c of data.clusters.filter((c) => c.status !== "noise")) {
+      const card = document.createElement("div");
+      card.className = "card"; card.tabIndex = 0; card.dataset.id = c.id; card.setAttribute("role", "button");
+      card.setAttribute("aria-label", `${shortTitle(c.title)}, ${statusLabel[c.status]}, ${signed(c.growth_rate)} per year`);
+      const top = document.createElement("div"); top.className = "card-top";
+      const pill = document.createElement("span"); pill.className = "pill " + c.status; pill.textContent = statusLabel[c.status];
+      const g = document.createElement("span"); g.className = "num"; g.style.fontSize = "13px"; g.textContent = signed(c.growth_rate) + "/yr";
+      top.append(pill, g);
+      const h = document.createElement("h3"); h.textContent = shortTitle(c.title);
+      card.append(top, h);
+
+      const W = 260, H = 64, mt = 14, mb = 12;
+      const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none" });
+      const max = Math.max(...c.shares, 1e-6);
+      const X = (i) => (i / (years.length - 1)) * W;
+      const Y = (v) => H - mb - (v / max) * (H - mt - mb);
+      el("rect", { x: X(years.length - win), y: mt - 4, width: W - X(years.length - win), height: H - mt - mb + 4, fill: css("--mid-wash") }, svg);
+      el("line", { class: "axisline", x1: 0, x2: W, y1: H - mb, y2: H - mb }, svg);
+      const line = c.shares.map((v, i) => `${X(i).toFixed(1)},${Y(v).toFixed(1)}`).join(" ");
+      const col = css(statusVar[c.status]);
+      el("polygon", { points: `0,${H - mb} ${line} ${W},${H - mb}`, fill: col, "fill-opacity": 0.16 }, svg);
+      el("polyline", { points: line, fill: "none", stroke: col, "stroke-width": 2, "vector-effect": "non-scaling-stroke", "stroke-linejoin": "round" }, svg);
+      const cross = el("line", { x1: 0, x2: 0, y1: mt - 4, y2: H - mb, stroke: css("--ink-2"), "stroke-width": 1, "vector-effect": "non-scaling-stroke", visibility: "hidden" }, svg);
+      card.appendChild(svg);
+
+      const meta = document.createElement("div"); meta.className = "meta num";
+      const a = document.createElement("span"); a.textContent = `${years[0]}–${years[years.length - 1]}`;
+      const b = document.createElement("span"); b.textContent = `peak ${pct(max)}`;
+      meta.append(a, b); card.appendChild(meta);
+
+      svg.addEventListener("pointermove", (e) => {
+        const r = svg.getBoundingClientRect();
+        const i = Math.max(0, Math.min(years.length - 1, Math.round(((e.clientX - r.left) / r.width) * (years.length - 1))));
+        cross.setAttribute("x1", X(i)); cross.setAttribute("x2", X(i)); cross.setAttribute("visibility", "visible");
+        showTip(e, [["strong", pct(c.shares[i])], ["", `${years[i]} · ${c.counts[i]} of ${data.year_totals[i]} papers`]]);
+      });
+      svg.addEventListener("pointerleave", () => { cross.setAttribute("visibility", "hidden"); hideTip(); });
+      card.addEventListener("click", () => select(c.id));
+      card.addEventListener("keydown", (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); select(c.id); } });
+      host.appendChild(card);
+    }
+  }
+
+  // ---------- table ----------
+  function drawTable() {
+    const tb = $("tbody"); tb.replaceChildren();
+    for (const c of data.clusters) {
+      const tr = document.createElement("tr"); tr.dataset.id = c.id;
+      const td = (text, cls) => { const d = document.createElement("td"); if (cls) d.className = cls; d.textContent = text; tr.appendChild(d); return d; };
+      td(shortTitle(c.title));
+      const st = document.createElement("td"); const p = document.createElement("span"); p.className = "pill " + c.status; p.textContent = statusLabel[c.status]; st.appendChild(p); tr.appendChild(st);
+      td(signed(c.growth_rate), "r num");
+      td(c.share_prior == null ? "–" : pct(c.share_prior), "r num");
+      td(pct(c.share_recent), "r num");
+      td(c.mean_year.toFixed(1), "r num");
+      td(c.size.toLocaleString(), "r num");
+      td((c.top_categories || []).map(([k, v]) => `${k} ${Math.round(v * 100)}%`).join(", "), "num");
+      tr.addEventListener("click", () => select(c.id));
+      tb.appendChild(tr);
+    }
+  }
+
+  function syncSelection() {
+    document.querySelectorAll(".card, tbody tr").forEach((n) => n.classList.toggle("selected", selected !== null && +n.dataset.id === selected));
+  }
+
+  function drawFooter() {
+    const p = data.params, f = $("foot"); f.replaceChildren();
+    const lines = [
+      `Growth is exp(slope) − 1 from a least-squares fit of log(share) on year over the last ${p.window} years. Clusters at or above +${Math.round(p.expanding_rate * 100)}%/yr count as expanding, and those at or below ${Math.round(p.contracting_rate * 100)}%/yr as contracting. Years with fewer than ${p.min_papers_per_year} papers in total are left out.`,
+      `"Share, prior" is the mean share over the ${p.window} years before the recent window. Cluster names are the top TF-IDF phrases from member abstracts. Made by cluster_dynamics.py from the ml_pipeline.py output.`,
+    ];
+    lines.forEach((t) => { const x = document.createElement("p"); x.textContent = t; f.appendChild(x); });
+  }
+
+  function renderAll() { drawSummary(); drawQuad(); drawMap(); drawMultiples(); drawTable(); drawFooter(); syncSelection(); }
+
+  fetch("cluster_dynamics.json")
+    .then((r) => { if (!r.ok) throw new Error(r.status); return r.json(); })
+    .then((d) => {
+      data = d;
+      const yr = $("year"); yr.min = d.years[0]; yr.max = d.years[d.years.length - 1]; yr.step = 1; yr.value = yr.max;
+      yr.addEventListener("input", drawMap);
+      $("play").addEventListener("click", togglePlay);
+      renderAll();
+      let rt; addEventListener("resize", () => { clearTimeout(rt); rt = setTimeout(() => { drawQuad(); drawMap(); }, 120); });
+      matchMedia("(prefers-color-scheme: dark)").addEventListener("change", renderAll);
+      new MutationObserver(renderAll).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+    })
+    .catch(() => {
+      $("summary").replaceChildren();
+      const s = document.createElement("span"); s.className = "state";
+      s.textContent = "cluster_dynamics.json couldn't be loaded. Run cluster_dynamics.py to generate it, then serve this folder over HTTP (for example: python -m http.server).";
+      $("summary").appendChild(s);
+    });
+})();
+</script>
