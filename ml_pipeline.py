@@ -19,9 +19,9 @@ import re
 # CONFIGURATION & HARDWARE SETUP (CPU QUICK-TEST FRIENDLY)
 # -----------------------------------------------------------------------------
 MODEL_NAME = "allenai/scibert_scivocab_uncased"
-SAMPLE_SIZE = 1000      # Set to None or len(df) to process full dataset
-BATCH_SIZE = 16         # Memory-friendly batch size for CPU
-MAX_LENGTH = 128        # Truncate sequence length for ~4x faster execution
+SAMPLE_SIZE = None      # Set to None or len(df) to process full dataset
+BATCH_SIZE = 256         # Memory-friendly batch size for CPU
+MAX_LENGTH = 256        # Truncate sequence length for ~4x faster execution
 CPU_CORES = os.cpu_count() or 4
 
 # Optimize PyTorch CPU threading
@@ -73,151 +73,171 @@ def extract_scibert_embeddings(texts, tokenizer, model, batch_size=BATCH_SIZE):
 # -----------------------------------------------------------------------------
 # 2. DIMENSION REDUCTION & SPATIAL MAPPING
 # -----------------------------------------------------------------------------
-def reduce_dimensions_umap(embeddings, n_neighbors=15, min_dist=0.05, n_components=2):
+def reduce_dimensions_umap(embeddings, n_neighbors, min_dist):
     """Compress high-dimensional vectors (768D) to 2D manifold coordinates."""
     print("Performing UMAP dimensionality reduction...")
     reducer = umap.UMAP(
         n_neighbors=n_neighbors,
         min_dist=min_dist,
-        n_components=n_components,
+        n_components=2,
         metric='cosine',
         n_jobs=-1,
+        low_memory=True
     )
     return reducer.fit_transform(embeddings)
 
 # -----------------------------------------------------------------------------
 # 3. CLUSTERING, INFLUENCE SCORING, AND METADATA EXTRACTION
 # -----------------------------------------------------------------------------
-def compute_hdbscan_clusters(coords_2d, min_cluster_size=300):
+def compute_hdbscan_clusters(coords_2d, min_cluster_size, min_samples, method):
     # HELLO LOGAN: RUN FOR EACH METHOD (DON'T SAVE OVER ANYTHING) THANK YOU
     
     """Density-based spatial clustering for unstructured semantic groupings."""
     print("Computing HDBSCAN density-based clusters...")
-    # clusterer = hdbscan.HDBSCAN(
-    #     min_cluster_size=min_cluster_size,
-    #     metric='euclidean',
-    #     cluster_selection_method='leaf',
-    #     core_dist_n_jobs=-1,
-    #     min_samples=5
-    # )
-    # return clusterer.fit_predict(coords_2d)
-
     clusterer = hdbscan.HDBSCAN(
-        min_cluster_size=500,
-        min_samples=10,
-        cluster_selection_method='leaf',
-        prediction_data=True,      # Required for soft clustering / membership queries
-        metric='euclidean'
+        min_cluster_size=min_cluster_size,
+        min_samples=min_samples,
+        metric='euclidean',
+        cluster_selection_method=method,
+        core_dist_n_jobs=14
     )
-    labels = clusterer.fit_predict(coords_2d)
-
-    # 2. Calculate membership probabilities for all points
-    soft_clusters = hdbscan.all_points_membership_vectors(clusterer)
-
-    # 3. Assign noise points (-1) to their highest-probability cluster
-    # (Optional threshold: e.g., only assign if probability > 0.1)
-    reassigned_labels = labels.copy()
-    for i in range(len(labels)):
-        if labels[i] == -1:
-            probs = soft_clusters[i]
-            if np.max(probs) > 0.05:  # Soft threshold to avoid completely lost outliers
-                reassigned_labels[i] = np.argmax(probs)
-    return reassigned_labels
+    return clusterer.fit_predict(coords_2d)
 
 
+# Single-word stop list (passed directly to TfidfVectorizer)
+SINGLE_STOP_WORDS = list(set(TfidfVectorizer(stop_words='english').get_stop_words()).union({
+    'paper', 'method', 'methods', 'models', 'model', 'results', 
+    'proposed', 'using', 'based', 'approach',
+    # Hard-code root noise tokens as single-word safeguards
+    'github', 'com', 'cifar', '10', '95', 'ci', 'et', 'al'
+}))
 
-
-def deduplicate_phrases(phrases):
-    """
-    Strips out singular/plural duplicates (e.g., Decision Tree vs Decision Trees)
-    and removes smaller substring fragments (e.g., 'Markov Decision' if 'Decision Process' or 'Markov Decision Process' is present).
-    """
-    clean_phrases = []
-    seen_stems = set()
-
-    for phrase in phrases:
-        phrase_lower = phrase.lower().strip()
-        # Create a simple normalized stem key (strip trailing 's', 'ing', 'es')
-        stem_key = re.sub(r'(ing|es|s)$', '', phrase_lower)
-        
-        # Check if this phrase is a subset or superset of something already selected
-        is_duplicate = False
-        for seen in seen_stems:
-            if stem_key in seen or seen in stem_key:
-                is_duplicate = True
-                break
-                
-        if not is_duplicate:
-            seen_stems.add(stem_key)
-            clean_phrases.append(phrase.title())
-            
-    return clean_phrases
-
-import re
-import pandas as pd
-from sklearn.feature_extraction.text import TfidfVectorizer
-
-BASE_STOP_WORDS = list(TfidfVectorizer(stop_words='english').get_stop_words())
-
-SINGLE_WORD_STOPS = set(BASE_STOP_WORDS + [
-    'paper', 'article', 'based', 'using', 'proposed', 'approach', 'method', 
-    'methods', 'results', 'problem', 'problems', 'model', 'models', 'data', 
-    'algorithm', 'algorithms', 'study', 'analysis', 'show', 'present', 
-    'application', 'propose', 'new', 'important', 'science', 'computer'
-])
-
-STOP_PHRASES = {
-    'computer science', 'artificial intelligence', 'cognitive science',
-    'machine learning', 'information computer', 'state art', 'state of the art',
-    'real world', 'domain independent', 'international planning',
-    'planning competition', 'propose new', 'symmetry important',
-    'simplicity generality', 'objects relations'
-}
-
-def generate_cluster_titles(df, text_column='abstract', top_n_keywords=3):
-    cluster_titles = {}
-    unique_clusters = [c for c in df['cluster_label'].unique() if c != -1]
+PHRASE_STOP_WORDS = [
+    # General Domain / Noise Phrases
+    'state art', 'state of the art', 'real world', 'training data',
+    'deep learning', 'neural network', 'neural networks', 'machine learning', 
+    'artificial intelligence', 'time series', 'et al', 'extensive experiments', 
+    '95 ci',
     
-    for cluster_id in unique_clusters:
-        cluster_docs = df[df['cluster_label'] == cluster_id][text_column].dropna().tolist()
-        
-        if not cluster_docs:
-            cluster_titles[cluster_id] = f"Cluster {cluster_id}"
+    # Flexible Regex matches for URLs, domain artifacts & datasets
+    r'github(?:\.|\s+)com',    # Matches "github.com", "github com", "github/com"
+    r'cifar(?:\-|\s*)10',       # Matches "cifar-10", "cifar 10", "cifar10"
+    r'http[s]?://\S+',         # Wipes raw URLs entirely
+]
+
+# Compile pattern with re.IGNORECASE
+PHRASE_REGEX = re.compile(r'\b(' + '|'.join(PHRASE_STOP_WORDS) + r')\b', flags=re.IGNORECASE)
+
+def deduplicate_phrases(phrases, top_n=3):
+    """Filters out phrase subsets, plurals, and corrupted short tokens."""
+    selected, selected_stem_sets = [], []
+    
+    for phrase in phrases:
+        if len(phrase) < 4 or phrase.isdigit():
             continue
             
-        vectorizer = TfidfVectorizer(
-            lowercase=True,
-            stop_words=list(SINGLE_WORD_STOPS),  # Only single words passed here
-            ngram_range=(2, 3), 
-            min_df=2,
-            max_features=200
-        )
+        tokens = phrase.lower().split()
+        stemmed_tokens = {re.sub(r'(ing|es|s)$', '', t) for t in tokens}
         
-        try:
-            tfidf_matrix = vectorizer.fit_transform(cluster_docs)
-            scores = tfidf_matrix.sum(axis=0).A1
-            words = vectorizer.get_feature_names_out()
-            
-            # Sort top candidate phrases
-            top_candidate_indices = scores.argsort()[::-1]
-            
-            # Filter out unwanted multi-word phrases post-vectorization
-            raw_keywords = []
-            for i in top_candidate_indices:
-                phrase = words[i].lower().strip()
-                if phrase not in STOP_PHRASES and not any(sp in phrase for sp in STOP_PHRASES):
-                    raw_keywords.append(words[i])
-                if len(raw_keywords) >= 10:
-                    break
-            
-            final_keywords = deduplicate_phrases(raw_keywords)[:top_n_keywords]
-            cluster_titles[cluster_id] = f"Cluster {cluster_id}: " + " / ".join(final_keywords)
-            
-        except ValueError:
-            cluster_titles[cluster_id] = f"Cluster {cluster_id}"
-            
-    cluster_titles[-1] = "Noise / Unclustered"
+        is_subset = any(stemmed_tokens.issubset(existing) for existing in selected_stem_sets)
+        is_superset = any(existing.issubset(stemmed_tokens) for existing in selected_stem_sets)
+        
+        if not is_subset and not is_superset:
+            selected.append(phrase.title())
+            selected_stem_sets.append(stemmed_tokens)
+            if len(selected) == top_n:
+                break
+                
+    return selected
+
+def generate_cluster_titles(df, cluster_col='cluster_label', text_col='abstract', top_n=3):
+    # 3. Filter out noise (-1) and missing abstracts
+    clean_df = df[df[cluster_col] != -1].dropna(subset=[text_col])
+    grouped = clean_df.groupby(cluster_col)[text_col].apply(" ".join).reset_index()
+    
+    # 4. Strip multi-word phrase stop words from raw grouped strings
+    cleaned_text = grouped[text_col].apply(lambda txt: PHRASE_REGEX.sub('', txt))
+    
+    # 5. Single-pass c-TF-IDF (No warnings!)
+    vectorizer = TfidfVectorizer(
+        stop_words=SINGLE_STOP_WORDS,
+        ngram_range=(2, 3),
+        min_df=1
+    )
+    
+    tfidf_matrix = vectorizer.fit_transform(cleaned_text)
+    feature_names = vectorizer.get_feature_names_out()
+    
+    # 6. Extract clean cluster titles
+    cluster_titles = {-1: "Noise / Unclustered"}
+    for idx, c_id in enumerate(grouped[cluster_col]):
+        top_indices = tfidf_matrix[idx].toarray()[0].argsort()[-15:][::-1]
+        candidates = [feature_names[i] for i in top_indices]
+        
+        keywords = deduplicate_phrases(candidates, top_n=top_n)
+        cluster_titles[c_id] = f"Cluster {c_id}: " + " / ".join(keywords)
+        
     return cluster_titles
+
+# def generate_cluster_titles(df, cluster_col='cluster_label', text_col='summary', 
+#                            top_n=3, max_cluster_coverage=0.15, max_iter=5):
+    
+#     # 1. Filter out noise (-1) and missing text
+#     clean_df = df[df[cluster_col] != -1].dropna(subset=[text_col])
+#     grouped = clean_df.groupby(cluster_col)[text_col].apply(" ".join).reset_index()
+#     num_clusters = len(grouped)
+
+#     # 2. Base single-word stop list
+#     single_stop_words = list(set(TfidfVectorizer(stop_words='english').get_stop_words()).union({
+#         'paper', 'method', 'models', 'results', 'proposed', 'using', 'based', 'approach'
+#     }))
+    
+#     # 3. Fit vectorizer ONCE (Fast: 1 single pass)
+#     vec = TfidfVectorizer(stop_words=single_stop_words, ngram_range=(2, 3), min_df=1)
+#     tfidf_matrix = vec.fit_transform(grouped[text_col])
+#     features = vec.get_feature_names_out()
+    
+#     # Track disabled feature indices dynamically (No Regex needed)
+#     disabled_indices = set()
+    
+#     # 4. Fast In-Memory Index Sweeping Loop
+#     for iteration in range(max_iter):
+#         candidate_counts = {}
+        
+#         for idx in range(num_clusters):
+#             # Get top 20 candidate feature indices for this cluster
+#             row = tfidf_matrix[idx].tocsr()
+#             top_idx = row.indices[row.data.argsort()[-20:][::-1]]
+            
+#             for i in top_idx:
+#                 if i not in disabled_indices:
+#                     candidate_counts[i] = candidate_counts.get(i, 0) + 1
+                    
+#         # Identify indices appearing in > max_cluster_coverage % of clusters
+#         new_disabled = {
+#             i for i, count in candidate_counts.items() 
+#             if (count / num_clusters) > max_cluster_coverage
+#         }
+        
+#         if not new_disabled:
+#             print(f"Fast solver converged at iteration {iteration + 1}!")
+#             break
+            
+#         print(f"Iteration {iteration + 1}: Discovered {len(new_disabled)} redundant phrases -> {[features[i] for i in new_disabled]}")
+#         disabled_indices.update(new_disabled)
+        
+#     # 5. Final Title Extraction (Filtering out disabled indices)
+#     cluster_titles = {-1: "Noise / Unclustered"}
+#     for idx, c_id in enumerate(grouped[cluster_col]):
+#         row = tfidf_matrix[idx].tocsr()
+#         # Sort top indices and exclude disabled ones
+#         sorted_indices = row.indices[row.data.argsort()[::-1]]
+#         valid_candidates = [features[i] for i in sorted_indices if i not in disabled_indices][:15]
+        
+#         keywords = deduplicate_phrases(valid_candidates, top_n=top_n)
+#         cluster_titles[c_id] = f"Cluster {c_id}: " + " / ".join(keywords)
+        
+#     return cluster_titles
 
 
 def load_graph_from_json(json_path, df):
@@ -249,7 +269,7 @@ def load_graph_from_json(json_path, df):
     return G
 
 
-def calculate_influence_scores(df, citation_col='citations', graph=None):
+def calculate_influence_scores(df, graph=None):
     """
     Computes final landmark influence scores combining 
     log-scaled citation counts and network PageRank centrality.
@@ -276,10 +296,30 @@ def calculate_influence_scores(df, citation_col='citations', graph=None):
     
     return scaler.fit_transform(raw_score.reshape(-1, 1)).flatten()
 
+def get_embeddings(df):
+    title = df['title'].fillna('')
+    abstract = df['summary'].fillna('')
+
+    # Concatenate title + abstract for rich contextual representations
+    df['text_for_embedding'] = (title + ". " + abstract).str.strip()
+
+    t1 = time.perf_counter()
+    # 1. Generate Embeddings
+    tokenizer, model = load_scibert()
+    
+    scibert_embeddings = extract_scibert_embeddings(
+        df['text_for_embedding'].tolist(),
+        tokenizer,
+        model
+    )
+
+    np.save("scibert_embeddings.npy", scibert_embeddings)
+    return scibert_embeddings
+
 # -----------------------------------------------------------------------------
 # MAIN PIPELINE EXECUTION (YOUR MODIFIED VERSION)
 # -----------------------------------------------------------------------------
-def run_pipeline(csv_path="arXiv_scientific_dataset.csv", embeddings=None):
+def run_pipeline(csv_path="arXiv_scientific_dataset.csv", out_file="enriched_arXiv_scientific_dataset.csv", embeddings=None, n_neighbors=15, min_dist=0.05, min_cluster_size=350, min_samples=3, method='eom'):
     # Load dataset
     print(f"Loading data from {csv_path}...")
     df = pd.read_csv(csv_path)
@@ -291,38 +331,22 @@ def run_pipeline(csv_path="arXiv_scientific_dataset.csv", embeddings=None):
 
     t0 = time.perf_counter()
     # Handle missing text gracefully
-    title = df['title'].fillna('')
-    abstract = df['summary'].fillna('')
-
-    # Concatenate title + abstract for rich contextual representations
-    df['text_for_embedding'] = (title + ". " + abstract).str.strip()
-
     if embeddings is None:
-        # 1. Generate Embeddings
-        tokenizer, model = load_scibert()
-        t1 = time.perf_counter()
-        
-        scibert_embeddings = extract_scibert_embeddings(
-            df['text_for_embedding'].tolist(),
-            tokenizer,
-            model
-        )
-        t2 = time.perf_counter()
-        print(f"SciBERT Embedding Generation Time: {t2-t1:.2f}s")
-
-        np.save("scibert_embeddings.npy", scibert_embeddings)
+        scibert_embeddings = get_embeddings(df)
     else:
         scibert_embeddings = np.load("scibert_embeddings.npy")
 
+    t2 = time.perf_counter()
+    print(f"SciBERT Embedding Generation Time: {t2-t1:.2f}s")
     # 2. Dimensionality Reduction (768D -> 2D)
-    spatial_coords_2d = reduce_dimensions_umap(scibert_embeddings)
+    spatial_coords_2d = reduce_dimensions_umap(scibert_embeddings, n_neighbors, min_dist)
     df['x_2d'] = spatial_coords_2d[:, 0]
     df['y_2d'] = spatial_coords_2d[:, 1]
     t3 = time.perf_counter()
     print(f"Dimension Reduction with UMAP Time: {t3-t2:.2f}s")
 
     # 3. Dynamic Clustering & Metainfo
-    df['cluster_label'] = compute_hdbscan_clusters(spatial_coords_2d)
+    df['cluster_label'] = compute_hdbscan_clusters(spatial_coords_2d, min_cluster_size, min_samples, method)
     cluster_title_map = generate_cluster_titles(df, text_column='summary', top_n_keywords=3)
     df['cluster_title'] = df['cluster_label'].map(cluster_title_map)
 
@@ -331,8 +355,8 @@ def run_pipeline(csv_path="arXiv_scientific_dataset.csv", embeddings=None):
     
     # Optional Influence Score computation
     # G = nx.erdos_renyi_graph(n=len(df), p=0.001, directed=True)
-    G = load_graph_from_json("citation_graph_adjacency_1000.json", df)
-    df['influence_score'] = calculate_influence_scores(df, citation_col='citations', graph=G)
+    G = load_graph_from_json("citation_graph_adjacency.json", df)
+    df['influence_score'] = calculate_influence_scores(df, graph=G)
 
     # Extract Orthogonal Temporal Metadata for 3D timelines
     if 'updated_date' in df.columns:
@@ -345,16 +369,51 @@ def run_pipeline(csv_path="arXiv_scientific_dataset.csv", embeddings=None):
     print(f"Metadata Extraction & Total Pipeline Overhead: {t5-t0:.2f}s")
 
     # Save enriched output for visualization layers
-    output_filename = f"enriched_{csv_path}"
-    df.to_csv(output_filename, index=False)
-    print(f"\nPipeline Complete! Output saved to: {output_filename}")
+    # output_filename = f"enriched_{csv_path}"
+    df.to_csv(out_file, index=False)
+    print(f"\nPipeline Complete! Output saved to: {out_file}")
+    return df
+
+
+def run_from_grid_result(grid_result, csv_path="arXiv_scientific_dataset_with_citations.csv", out_file="enriched_arXiv_scientific_dataset.csv"):
+    
+    # Load dataset
+    print(f"Loading data from {csv_path}...")
+    df = pd.read_csv(csv_path)
+    df_grid = pd.read_csv(grid_result)
+
+    # 2. Dimensionality Reduction (768D -> 2D)
+    df['x_2d'] = df_grid['x_2d']
+    df['y_2d'] = df_grid['y_2d']
+
+    # 3. Dynamic Clustering & Metainfo
+    df['cluster_label'] = df_grid['cluster_label']
+    cluster_title_map = generate_cluster_titles(df, cluster_col='cluster_label', text_col='summary', top_n=3)
+    df['cluster_title'] = df['cluster_label'].map(cluster_title_map)
+
+    # Optional Influence Score computation
+    # G = nx.erdos_renyi_graph(n=len(df), p=0.001, directed=True)
+    G = load_graph_from_json("citation_graph_adjacency.json", df)
+    df['influence_score'] = calculate_influence_scores(df, graph=G)
+
+    # Extract Orthogonal Temporal Metadata for 3D timelines
+    if 'updated_date' in df.columns:
+        df['parsed_date'] = pd.to_datetime(df['updated_date'], errors='coerce', format='mixed')
+        # Fill missing dates gracefully before converting to epoch integers
+        valid_dates = df['parsed_date'].dropna()
+        df['timestamp'] = (df['parsed_date'].astype('int64') // 10**9).where(df['parsed_date'].notna(), 0)
+
+    # Save enriched output for visualization layers
+    # output_filename = f"enriched_{csv_path}"
+    df.to_csv(out_file, index=False)
+    print(f"\nPipeline Complete! Output saved to: {out_file}")
     return df
 
 
 def create_snapshot(df, snapshot_year=None, max_titles_to_label=15, output_image="arxiv_snapshot.png"):
     df_copy = df.copy()
     
-    # 1. Clean Title Formatting
+    # 1. Filter by Year
     if snapshot_year is not None and str(snapshot_year).lower() != 'none':
         df_copy['parsed_date'] = pd.to_datetime(df_copy['updated_date'], errors='coerce', format='mixed')
         snapshot_df = df_copy[df_copy['parsed_date'].dt.year <= snapshot_year].copy()
@@ -366,69 +425,97 @@ def create_snapshot(df, snapshot_year=None, max_titles_to_label=15, output_image
     if snapshot_df.empty:
         return
 
-    # 2. Setup Canvas
+    # 2. Extract and Sort Unique Clustered Labels
+    clustered_df = snapshot_df[snapshot_df['cluster_label'] != -1]
+    sorted_labels = sorted(clustered_df['cluster_label'].unique())
+
+    # 3. Setup Canvas & Color Map
     plt.figure(figsize=(16, 12))
-    
-    # 3. Categorical Palette for Clusters
-    unique_titles = [t for t in snapshot_df['cluster_title'].unique() if "Noise" not in t]
-    color_map = plt.colormaps['tab20'].resampled(max(len(unique_titles), 1))
-    color_lookup = {title: color_map(i) for i, title in enumerate(unique_titles)}
+    color_map = plt.colormaps['tab20'].resampled(max(len(sorted_labels), 1))
+    color_lookup = {lbl: color_map(i % 20) for i, lbl in enumerate(sorted_labels)}
 
-    # 4. Plot Clusters using groupby
-    for title, c_df in snapshot_df.groupby('cluster_title'):
-        if "Noise" in title:
-            plt.scatter(
-                c_df['umap_x'], c_df['umap_y'],
-                c='gray', alpha=0.15, s=5,  # Smaller dots and lower alpha for 287k points
-                label=title, rasterized=True
-            )
-        else:
-            sizes = np.clip(c_df['influence_score'] * 80, 10, 300) if 'influence_score' in c_df.columns else 10
-            plt.scatter(
-                c_df['umap_x'], c_df['umap_y'],
-                color=color_lookup.get(title),
-                alpha=0.6,
-                s=sizes,
-                label=title,
-                edgecolors='none',          # Removed edgecolors to speed up rendering 287k points
-                rasterized=True
-            )
+    # 4. Plot Noise Points First
+    noise_df = snapshot_df[snapshot_df['cluster_label'] == -1]
+    if not noise_df.empty:
+        plt.scatter(
+            noise_df['x_2d'], noise_df['y_2d'],
+            c='lightgray', alpha=0.15, s=3,
+            label="Noise / Unclustered", rasterized=True
+        )
 
-    # 5. Clean Landmark Text Annotations (Prevents Label Overlap)
-    if 'influence_score' in snapshot_df.columns and max_titles_to_label > 0:
-        top_landmarks = snapshot_df.sort_values(by='influence_score', ascending=False).head(max_titles_to_label)
+    # 5. Plot Cluster Density Continents using EXACT dataframe titles
+    for c_id in sorted_labels:
+        c_df = snapshot_df[snapshot_df['cluster_label'] == c_id]
         
-        for _, row in top_landmarks.iterrows():
-            clean_title = str(row['title']).replace('\n', ' ').strip()
-            truncated_title = (clean_title[:28] + '...') if len(clean_title) > 30 else clean_title
+        # Pull raw title directly without regex mutation
+        raw_title = str(c_df['cluster_title'].iloc[0])
+        
+        # Safely ensure label format is clean: "[c_id] Title"
+        if raw_title.startswith(f"Cluster {c_id}:"):
+            raw_title = raw_title.replace(f"Cluster {c_id}:", "").strip()
             
-            plt.annotate(
-                truncated_title,
-                (row['umap_x'], row['umap_y']),
-                fontsize=8,
-                fontweight='bold',
-                alpha=0.9,
-                bbox=dict(boxstyle='round,pad=0.2', facecolor='white', alpha=0.7, edgecolor='none'), # White backdrop box
-                arrowprops=dict(arrowstyle='->', connectionstyle='arc3,rad=0', lw=0.5, color='black'),
-                xytext=(10, 10),
-                textcoords='offset points'
-            )
+        legend_label = f"[{c_id}] {raw_title}"
+        sizes = np.clip(c_df['influence_score'] * 80, 10, 300) if 'influence_score' in c_df.columns else 8
+        
+        plt.scatter(
+            c_df['x_2d'], c_df['y_2d'],
+            color=color_lookup[c_id],
+            alpha=0.5,
+            s=sizes,
+            label=legend_label,
+            edgecolors='none',
+            rasterized=True
+        )
 
-    # 6. Formatting & Export
-    plt.title(title_str, fontsize=16, fontweight='bold')
-    plt.xlabel("UMAP Dimension 1")
-    plt.ylabel("UMAP Dimension 2")
-    plt.legend(bbox_to_anchor=(1.02, 1), loc='upper left', fontsize=9, frameon=True)
+    # 6. Direct Centroid Badge Placement
+    centroids = clustered_df.groupby('cluster_label')[['x_2d', 'y_2d']].median().reset_index()
+    for _, row in centroids.iterrows():
+        c_num = int(row['cluster_label'])
+        plt.annotate(
+            str(c_num),
+            (row['x_2d'], row['y_2d']),
+            fontsize=9.5,
+            fontweight='bold',
+            color='black',
+            ha='center',
+            va='center',
+            bbox=dict(
+                boxstyle='circle,pad=0.3',
+                facecolor='white',
+                edgecolor='black',
+                linewidth=1.2,
+                alpha=0.85
+            ),
+            zorder=10
+        )
+
+    # 7. Formatting & Export
+    plt.title(title_str, fontsize=16, fontweight='bold', pad=15)
+    plt.xlabel("UMAP Dimension 1", fontsize=11)
+    plt.ylabel("UMAP Dimension 2", fontsize=11)
+    
+    plt.legend(bbox_to_anchor=(1.01, 1), loc='upper left', fontsize=8.5, frameon=True, ncol=1)
     plt.tight_layout()
     plt.savefig(output_image, dpi=300, bbox_inches='tight')
     plt.close()
 
-if __name__ == "__main__":
-    df = run_pipeline("arXiv_scientific_dataset_with_citations.csv", embeddings=None) # Embeddings will save to a file called scibert_embeddings.npy. Reuse embeddings by changing None to that
 
-    graph_snapshot = create_snapshot(
-        df,
-        snapshot_year=None,
-        max_titles_to_label=30,
-        output_image="snapshot.png"
-    )
+if __name__ == "__main__":
+
+    # full pipeline from scratch
+    # df = run_pipeline("arXiv_scientific_dataset_with_citations.csv", embeddings="scibert_embeddings.npy", n_neighbors=15, min_dist=0.01, min_cluster_size=350, min_samples=3, method='eom')
+
+    # pipeline from grid search results
+    OUTPUT_DIR = "TightIslands_mcs250_ms3_eom"
+    os.makedirs(f"outputs/{OUTPUT_DIR}", exist_ok=True)
+    df = run_from_grid_result(f"outputs/cluster_outputs/{OUTPUT_DIR}.csv")
+    
+    # snapshot only post pipeline
+    # df = pd.read_csv(f"outputs/{OUTPUT_DIR}/enriched_arXiv_scientific_dataset.csv")
+
+    # graph_snapshot = create_snapshot(
+    #     df,
+    #     snapshot_year=None,
+    #     max_titles_to_label=5,
+    #     output_image=f"outputs/{OUTPUT_DIR}/snapshot.png"
+    # )
