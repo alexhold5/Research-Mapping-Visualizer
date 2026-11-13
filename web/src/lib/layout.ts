@@ -8,7 +8,30 @@
 // After the rounds, a few pure separation passes squeeze out any leftover overlap.
 // Deterministic: same input always gives the same layout.
 
-export function resolveOverlaps(nodes, { padding = 0.6, rounds = 200, pull = 0.03, finalPasses = 150 } = {}) {
+/** Anything with a position and a radius; x and y are edited in place. */
+export interface Circle {
+  x: number;
+  y: number;
+  radius: number;
+}
+
+export interface OverlapOptions {
+  padding?: number;
+  rounds?: number;
+  pull?: number;
+  finalPasses?: number;
+}
+
+export interface OverlapReport {
+  moved: number;
+  maxMoved: number;
+  overlaps: number | null;
+}
+
+export function resolveOverlaps(
+  nodes: Circle[],
+  { padding = 0.6, rounds = 200, pull = 0.03, finalPasses = 150 }: OverlapOptions = {},
+): OverlapReport {
   const count = nodes.length;
   if (count < 2) return { moved: 0, maxMoved: 0, overlaps: 0 };
 
@@ -21,9 +44,9 @@ export function resolveOverlaps(nodes, { padding = 0.6, rounds = 200, pull = 0.0
   const GOLDEN = 2.399963; // used to pick a direction for circles sitting exactly on top of each other
 
   // Returns the deepest overlap found (0 when everything is clear).
-  function separate() {
-    const grid = new Map();
-    const key = (cx, cy) => (cx + 50000) * 100000 + (cy + 50000);
+  function separate(): number {
+    const grid = new Map<number, number[]>();
+    const key = (cx: number, cy: number) => (cx + 50000) * 100000 + (cy + 50000);
     for (let i = 0; i < count; i++) {
       const k = key(Math.floor(x[i] / cell), Math.floor(y[i] / cell));
       const bucket = grid.get(k);
@@ -84,7 +107,7 @@ export function resolveOverlaps(nodes, { padding = 0.6, rounds = 200, pull = 0.0
     nodes[i].y = y[i];
   }
   // Brute-force check of the result; skipped for big datasets where n² would be slow.
-  let overlaps = null;
+  let overlaps: number | null = null;
   if (count <= 5000) {
     overlaps = 0;
     for (let i = 0; i < count; i++) {

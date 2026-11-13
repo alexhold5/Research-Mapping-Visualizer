@@ -1,8 +1,65 @@
-﻿import ForceGraph3D from '3d-force-graph';
-import { resolveOverlaps } from './layout.js';
+import ForceGraph3D from '3d-force-graph';
 import {
-  BackSide, CanvasTexture, Group, Mesh, MeshBasicMaterial, MeshLambertMaterial, SphereGeometry, SRGBColorSpace, Sprite, SpriteMaterial,
-} from 'three';
+  XY_SCALE,
+  NODE_PADDING,
+  FIT_PADDING,
+  PAN_SLACK,
+  FLY_MS,
+  LEFT_INSET_PX,
+  BOTTOM_INSET_PX,
+  DETAILS_PANEL_PX,
+  MIN_DISTANCE,
+  BUBBLE_MAX,
+  BUBBLE_MIN,
+  CLUSTER_FIT,
+  LOAD_PX,
+  OPEN_PX,
+  FULL_PX,
+  FADE_START_PX,
+  FADE_END_PX,
+  BUBBLE_ALPHA,
+  FADED_ALPHA,
+  VIEW_MARGIN,
+  MAX_LOADS,
+  MAX_OPEN,
+  MAX_LOADED,
+  OPEN_HYSTERESIS,
+  INNER_RADIUS,
+  INNER_MAX,
+  FILL,
+  R_MIN,
+  R_MAX,
+  SIZE_CURVE,
+  TITLE_FONT,
+  TITLE_LINE,
+  TITLE_MIN_PX,
+  TITLE_MAX_PX,
+  TITLE_FIT_W,
+  TITLE_FIT_H,
+  TITLE_MOVE_START_PX,
+  TITLE_MOVE_END_PX,
+  TITLE_TOP_PX,
+  EDGE_PICK_PX,
+  EDGE_DIM,
+  EDGE_HIGHLIGHT,
+  EDGE_WIDTH_BOOST,
+  HALO_WIDTH,
+  HALO_MIN,
+  HALO_MIN_PX,
+  UNIT_SPHERE,
+  HALO_MATERIAL,
+  FIELD_COLORS,
+  OTHER_COLOR,
+  DIMMED_COLOR,
+  PAPER_LIGHTEN,
+} from './constants';
+import { $, escapeHtml, fetchJson, stripPrefix, swatch } from './lib/html';
+import { dim, lighten, withAlpha } from './lib/color';
+import { distanceToSegment, lerp, smoothstep } from './lib/math';
+import { makeTitleSprite, titleDims } from './lib/titleSprite';
+import { Group, Mesh, MeshLambertMaterial } from 'three';
+import { noRaycast } from './lib/raycast';
+import { resolveOverlaps } from './lib/layout';
 
 // ---------------------------------------------------------------------------
 // One continuous map. Each cluster ("chunk") is a bubble sized by how many papers it holds.
@@ -12,154 +69,6 @@ import {
 // at the other cluster's bubble.
 // Data comes from export_web_data.py: /data/overview.json and /data/clusters/<id>.json
 // ---------------------------------------------------------------------------
-
-// ---- Layout constants (tweak these to change how things look) ----
-const XY_SCALE = 300;       // overview positions arrive normalized to [-1, 1]; this sets world size
-const NODE_PADDING = 0.6;   // minimum empty gap kept between any two circles (world units)
-const FIT_PADDING = 1.08;   // >1 leaves a margin around the map when fitting it to the window
-const PAN_SLACK = 0.4;      // extra pan room past the map edge, as a fraction of half the visible area
-const FLY_MS = 800;         // camera animation time
-const LEFT_INSET_PX = 400;  // width the left info panel covers on wide screens (panel + margin)
-const BOTTOM_INSET_PX = 150; // height the timeline box covers at the bottom (box + margin)
-const DETAILS_PANEL_PX = 412; // width the paper details panel covers on the right (panel + margin)
-const MIN_DISTANCE = 10;    // closest the camera can get (small bubbles need to fill the screen)
-
-// Bubbles: radius ~ sqrt(papers), so AREA is proportional to the number of papers.
-const BUBBLE_MAX = 30;      // radius of the biggest cluster
-const BUBBLE_MIN = 2;       // smallest a bubble can shrink to when the time window / field filter is narrowed
-const CLUSTER_FIT = 0.85;   // clicking a bubble zooms until it fills this fraction of the free screen area
-
-// Level of detail, in on-screen pixels of a bubble's radius:
-const LOAD_PX = 45;         // start fetching the bubble's papers
-const OPEN_PX = 75;         // show the papers (the bubble starts to expand to its full size)
-const FULL_PX = 115;        // fully expanded
-const FADE_START_PX = 75;   // from here the bubble fades to a faint outline...
-const FADE_END_PX = 130;    // ...reached at this size
-const BUBBLE_ALPHA = 0.95;
-const FADED_ALPHA = 0.1;
-const VIEW_MARGIN = 1.15;   // bubbles this far outside the screen still count as "in view"
-const MAX_LOADS = 4;        // cluster files fetched at the same time
-const MAX_OPEN = 5;         // at most this many bubbles show their papers at once: the ones nearest the middle of the screen
-const MAX_LOADED = 14;      // cluster files kept in memory; the least recently open ones are dropped beyond this
-const OPEN_HYSTERESIS = 0.8; // an already-open bubble counts as this much closer, so two similar bubbles don't flicker
-
-// Papers inside an open bubble: laid out at a comfortable size, then shrunk to fit the bubble.
-const INNER_RADIUS = 190;   // 90% of a cluster's papers fit within this distance of the center
-const INNER_MAX = 255;      // outliers are squashed to stay within this distance
-const FILL = 0.9;           // papers fill this fraction of the bubble's radius
-// Paper size is set by influence RANK (the raw scores of a cluster's top papers are too similar).
-const R_MIN = 5;
-const R_MAX = 28;
-const SIZE_CURVE = 1.5;     // >1 keeps most papers smallish and lets the top few stand out
-
-// Cluster titles drawn on the map. Zoomed out, a bubble's title sits in its middle (split into short lines
-// and sized to fit); once the bubble opens it moves above the outline at a constant readable size.
-const TITLE_FONT = 44;      // text size on the title's canvas (px); also sets how crisp it looks
-const TITLE_LINE = 54;      // line height on that canvas
-const TITLE_MIN_PX = 9;     // a centered title only appears once it would be at least this big on screen...
-const TITLE_MAX_PX = 24;    // ...and never gets bigger than this
-const TITLE_FIT_W = 1.6;    // a centered title may fill this many radii across (the bubble is 2 wide)...
-const TITLE_FIT_H = 1.1;    // ...and this many radii tall
-const TITLE_MOVE_START_PX = 105; // the title starts moving from the middle to the top at this bubble radius...
-const TITLE_MOVE_END_PX = 140;   // ...and is fully at the top at this one
-const TITLE_TOP_PX = 15;    // on-screen text size of a title above an open bubble
-
-// Citation lines of the selected paper (the one whose details are open) are highlighted and can be clicked.
-const EDGE_PICK_PX = 9;          // a click this close (in screen pixels) to a highlighted line follows it
-const EDGE_DIM = 0.3;            // other lines fade to this fraction of their brightness while a paper is selected
-const EDGE_HIGHLIGHT = 'rgba(255, 255, 255, 0.95)';
-const EDGE_WIDTH_BOOST = 2.4;    // highlighted paper-to-paper lines are this much thicker (and their arrows bigger)
-
-// Outline = a slightly bigger white sphere behind the node ("halo").
-const HALO_WIDTH = 0.18;    // outline thickness as a fraction of the node's radius
-const HALO_MIN = 0.05;      // minimum outline thickness in world units...
-const HALO_MIN_PX = 3;      // ...and on screen, so even the smallest paper's outline is easy to see
-const UNIT_SPHERE = new SphereGeometry(1, 20, 14); // shared by every bubble and halo; scaled per node
-// BackSide renders only the inside of the shell, so it never covers the node in front of it.
-const HALO_MATERIAL = new MeshBasicMaterial({ color: 0xffffff, side: BackSide });
-
-// One color per arXiv field (the exporter lists the biggest fields first; the rest are "other").
-const FIELD_COLORS = [
-  '#4e79a7', '#f28e2b', '#e15759', '#76b7b2', '#59a14f', '#edc948',
-  '#b07aa1', '#ff9da7', '#9c755f', '#bab0ac', '#86bcb6', '#d37295',
-];
-const OTHER_COLOR = '#6c7386';
-const DIMMED_COLOR = 'rgba(95, 100, 115, 0.3)'; // papers outside the selected field
-const PAPER_LIGHTEN = 0.4;  // papers are their cluster's color mixed this far toward white
-
-const $ = (id) => document.getElementById(id);
-const escapeHtml = (s) =>
-  String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
-const stripPrefix = (title) => title.replace(/^Cluster \d+:\s*/, ''); // "Cluster 5: Foo / Bar" -> "Foo / Bar"
-const swatch = (color) => `<span class="swatch" style="background:${color}"></span>`;
-const fetchJson = async (url) => {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`${url}: ${res.status}`);
-  return res.json();
-};
-const withAlpha = (hex, a) => {
-  const n = parseInt(hex.slice(1), 16);
-  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
-};
-const smoothstep = (a, b, x) => {
-  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
-  return t * t * (3 - 2 * t);
-};
-const lerp = (a, b, t) => a + (b - a) * t;
-// Mix a #rrggbb color toward white (amount 0..1).
-const lighten = (hex, amount) => {
-  const n = parseInt(hex.slice(1), 16);
-  const mix = (c) => Math.round(lerp(c, 255, amount));
-  return `#${[(n >> 16) & 255, (n >> 8) & 255, n & 255].map((c) => mix(c).toString(16).padStart(2, '0')).join('')}`;
-};
-const noRaycast = () => {};
-// Scale the opacity of an "rgba(r, g, b, a)" color.
-const dim = (color, factor) => color.replace(/rgba\(([^)]*),\s*([\d.]+)\)$/, (_, rgb, a) => `rgba(${rgb}, ${(a * factor).toFixed(2)})`);
-// Shortest distance from point (px, py) to the segment a-b (all in screen pixels).
-function distanceToSegment(px, py, a, b) {
-  const dx = b.x - a.x;
-  const dy = b.y - a.y;
-  const len2 = dx * dx + dy * dy;
-  const t = len2 ? Math.min(1, Math.max(0, ((px - a.x) * dx + (py - a.y) * dy) / len2)) : 0;
-  return Math.hypot(px - (a.x + t * dx), py - (a.y + t * dy));
-}
-
-// ---- Title text (drawn on canvases, shown as sprites: flat images that always face the camera) ----
-const TITLE_FAMILY = 'system-ui, -apple-system, "Segoe UI", sans-serif';
-const measureCtx = document.createElement('canvas').getContext('2d');
-measureCtx.font = `600 ${TITLE_FONT}px ${TITLE_FAMILY}`;
-const TITLE_PAD = 14;
-function titleDims(lines) {
-  return {
-    w: Math.ceil(Math.max(...lines.map((l) => measureCtx.measureText(l).width))) + TITLE_PAD * 2,
-    h: lines.length * TITLE_LINE + TITLE_PAD * 2,
-  };
-}
-function makeTitleSprite(lines, dims) {
-  const canvas = document.createElement('canvas');
-  canvas.width = dims.w;
-  canvas.height = dims.h;
-  const ctx = canvas.getContext('2d');
-  ctx.font = `600 ${TITLE_FONT}px ${TITLE_FAMILY}`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.lineJoin = 'round';
-  ctx.lineWidth = TITLE_FONT * 0.2;
-  ctx.strokeStyle = 'rgba(8, 10, 16, 0.92)'; // a dark outline keeps the text readable on any color
-  ctx.fillStyle = '#ffffff';
-  lines.forEach((line, i) => {
-    const y = TITLE_PAD + TITLE_LINE * (i + 0.5) + 2;
-    ctx.strokeText(line, dims.w / 2, y);
-    ctx.fillText(line, dims.w / 2, y);
-  });
-  const texture = new CanvasTexture(canvas);
-  texture.colorSpace = SRGBColorSpace;
-  // Always drawn on top, even where an open bubble's papers are.
-  const sprite = new Sprite(new SpriteMaterial({ map: texture, transparent: true, depthTest: false, depthWrite: false }));
-  sprite.renderOrder = 20;
-  sprite.raycast = noRaycast; // text must not block hovering or clicking what's underneath
-  return sprite;
-}
 
 async function main() {
   const overview = await fetchJson('/data/overview.json');
