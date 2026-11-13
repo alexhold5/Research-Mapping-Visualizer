@@ -23,6 +23,7 @@ with open(json_path, 'r', encoding='utf-8') as f:
         records.append({
             'id': paper.get('id'),
             'title': paper.get('title', '').replace('\n', ' ').strip(),
+            'author': paper.get('author', '').replace('\n', ' ').strip(),
             'summary': paper.get('abstract', '').replace('\n', ' ').strip(),
             'categories': paper.get('categories', ''),
             'updated_date': paper.get('update_date')
