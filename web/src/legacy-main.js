@@ -1260,7 +1260,10 @@ async function main() {
   window.lod = { bubbleNodes, loaded, get attached() { return attached; }, get selected() { return detailsFor; }, get nodeById() { return nodeById; } };
 }
 
-main().catch((err) => {
-  console.error(err);
-  $('stats').textContent = `Failed to load data: ${err.message}`;
-});
+// Called by App once the page skeleton is in the DOM (main() looks elements up by id).
+export function startLegacyApp() {
+  main().catch((err) => {
+    console.error(err);
+    $('stats').textContent = `Failed to load data: ${err.message}`;
+  });
+}
