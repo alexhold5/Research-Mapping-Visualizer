@@ -3,8 +3,14 @@ node_modules/
 dist/
 .vite/
 
-# Data files: too big for git (raw dataset is 478 MB, GitHub's limit is 100 MB per file)
-# and reproducible from the pipeline. Download the raw dataset from Kaggle.
-*.csv
-*.pdf\
-*.png
+# Raw dataset (478 MB, over GitHub's 100 MB file limit); download it from Kaggle instead
+/arXiv_scientific_dataset_with_citations.csv
+.venv
+outputs
+scibert_embeddings.npy
+# Large data / model outputs 
+*.npy
+*.npy.progress
+/arXiv_full_data.csv
+/enriched_arXiv_scientific_dataset_with_citations.csv
+/enriched_arXiv_scientific_dataset_with_citations_full.csv
