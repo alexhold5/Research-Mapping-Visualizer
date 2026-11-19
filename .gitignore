@@ -14,4 +14,8 @@ scibert_embeddings.npy
 /arXiv_full_data.csv
 /enriched_arXiv_scientific_dataset_with_citations.csv
 /enriched_arXiv_scientific_dataset_with_citations_full.csv
+/enriched_arXiv_scientific_dataset.csv
 scibert_embeddings_full.npy
+
+# Point-cloud prototype data (generated locally by export_points.py; hundreds of MB)
+web/public/data/v2/
