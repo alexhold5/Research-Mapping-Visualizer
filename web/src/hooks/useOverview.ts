@@ -13,7 +13,7 @@ export function useOverview(): State {
 
   useEffect(() => {
     let cancelled = false;
-    fetchJson<Overview>('/data/overview.json')
+    fetchJson<Overview>(`${import.meta.env.BASE_URL}data/overview.json`)
       .then((overview) => {
         if (!cancelled) setState({ status: 'ready', overview });
       })

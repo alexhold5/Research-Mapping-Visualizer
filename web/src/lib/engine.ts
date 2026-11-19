@@ -525,7 +525,7 @@ export function createEngine(container: HTMLElement, overview: Overview) {
     if (loaded.has(id)) return Promise.resolve(loaded.get(id));
     if (!pending.has(id)) {
       loading.add(id);
-      pending.set(id, fetchJson<ClusterFile>(`/data/clusters/${id}.json`)
+      pending.set(id, fetchJson<ClusterFile>(`${import.meta.env.BASE_URL}data/clusters/${id}.json`)
         .then((data) => {
           if (destroyed) return;
           loaded.set(id, buildCluster(bubbleOf.get(id)!, data));
