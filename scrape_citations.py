@@ -2,169 +2,192 @@ import os
 import re
 import json
 import time
+import random
 import requests
 import pandas as pd
 
 S2_BATCH_URL = "https://api.semanticscholar.org/graph/v1/paper/batch"
+INPUT_CSV = "data/arXiv_full_dataset.csv"
+CHECKPOINT_JSONL = "s2_checkpoint.jsonl"
+FINAL_CSV = "arXiv_full_dataset_with_citations.csv"
+FINAL_ADJ_JSON = "citation_graph_adjacency_full.json"
+
+# Steady token-bucket spacing for 500-ID batches requesting nested references.externalIds
+MIN_INTERVAL = 5.5
+_LAST_REQ_TS = 0.0
+_SESSION = requests.Session()
+
 
 def clean_arxiv_id(raw_id):
-    """
-    Sanitizes raw arXiv IDs into S2-compliant ARXIV:... format.
-    """
+    """Sanitizes modern and pre-2007 legacy arXiv IDs without mangling hyphenated prefixes."""
     if pd.isna(raw_id) or not raw_id:
         return None
-    raw_str = str(raw_id).strip()
-    
-    # Legacy format: cs-9308101 or cs/9308101 -> ARXIV:cs/9308101
-    legacy_match = re.search(r'([a-zA-Z\-]+(?:\.[a-zA-Z\-]+)?)[/\-]([0-9]{7})(?:v\d+)?', raw_str)
-    if legacy_match:
-        cat, num = legacy_match.group(1), legacy_match.group(2)
-        cat_normalized = cat.replace('-', '/')
-        return f"ARXIV:{cat_normalized}/{num}"
+    raw_str = re.sub(r"v\d+$", "", str(raw_id).strip())
 
-    # Modern format: 2103.12345 -> ARXIV:2103.12345
-    modern_match = re.search(r'(\d{4}\.\d{4,5})(?:v\d+)?', raw_str)
+    # Legacy format with slash already present: hep-th/9901001, math.AG/0601001
+    legacy_slash = re.fullmatch(r"([a-zA-Z\-]+(?:\.[a-zA-Z\-]+)?)/(\d{7})", raw_str)
+    if legacy_slash:
+        return f"ARXIV:{legacy_slash.group(1)}/{legacy_slash.group(2)}"
+
+    # Legacy format stored with hyphen instead of slash: cs-9308101 -> cs/9308101
+    legacy_hyphen = re.fullmatch(r"([a-zA-Z]+)-(\d{7})", raw_str)
+    if legacy_hyphen:
+        return f"ARXIV:{legacy_hyphen.group(1)}/{legacy_hyphen.group(2)}"
+
+    # Modern format: 2103.12345 or 2103.1234
+    modern_match = re.fullmatch(r"\d{4}\.\d{4,5}", raw_str)
     if modern_match:
-        return f"ARXIV:{modern_match.group(1)}"
+        return f"ARXIV:{modern_match.group(0)}"
 
     return None
 
-def fetch_s2_batch(paper_identifiers, api_key=None):
-    """
-    Queries S2 Batch API requesting citation counts and reference external IDs.
-    """
-    headers = {}
-    if api_key:
-        headers["x-api-key"] = api_key
 
-    params = {"fields": "paperId,title,citationCount,references.externalIds"}
-    
-    valid_payload_ids = [pid for pid in paper_identifiers if pid and isinstance(pid, str)]
-    if not valid_payload_ids:
-        return [None] * len(paper_identifiers)
+def _paced_post(url, params, json_payload, headers, timeout=45):
+    global _LAST_REQ_TS
+    elapsed = time.monotonic() - _LAST_REQ_TS
+    wait = (MIN_INTERVAL - elapsed) + random.uniform(0.10, 0.40)
+    if wait > 0:
+        time.sleep(wait)
+    _LAST_REQ_TS = time.monotonic()
+    return _SESSION.post(url, params=params, json=json_payload, headers=headers, timeout=timeout)
 
-    payload = {"ids": valid_payload_ids}
-    
-    try:
-        response = requests.post(
-            S2_BATCH_URL,
-            params=params,
-            json=payload,
-            headers=headers,
-            timeout=30
-        )
-        
-        if response.status_code == 200:
-            return response.json()
-            
-        elif response.status_code == 400:
-            print("\n[400 Bad Request] Malformed ID detected in batch. Retrying batch items individually...")
-            results = []
-            for pid in valid_payload_ids:
-                time.sleep(1.05)
-                single_res = requests.post(
-                    S2_BATCH_URL, 
-                    params=params, 
-                    json={"ids": [pid]}, 
-                    headers=headers,
-                    timeout=15
-                )
-                if single_res.status_code == 200 and single_res.json():
-                    results.append(single_res.json()[0])
-                else:
-                    results.append(None)
-            return results
 
-        elif response.status_code == 429:
-            print("\n[429 Rate Limit Hit] Backing off for 10s...")
-            time.sleep(10)
-            
-    except Exception as e:
-        print(f"\nRequest exception: {e}")
-        
-    return [None] * len(paper_identifiers)
+def fetch_s2_batch_bisect(paper_identifiers, api_key=None):
+    valid_ids = [pid for pid in paper_identifiers if pid]
+    if not valid_ids:
+        return {}
 
-def process_citation_enrichment(df, api_key=None, batch_size=100, sample_size=None):
-    """
-    Processes DataFrame, enriches citation counts and maps arXiv-to-arXiv edges.
-    
-    Parameters:
-        df (pd.DataFrame): Input dataset containing raw arXiv IDs in 'id' column.
-        api_key (str): Semantic Scholar API key (optional).
-        batch_size (int): Number of IDs per S2 batch request.
-        sample_size (int): Optional integer to subsample the first N rows for testing.
-    """
-    # Slice sample if requested
-    if sample_size and isinstance(sample_size, int) and sample_size < len(df):
-        print(f"Subsampling dataset to first {sample_size} rows for testing...")
-        df = df.iloc[:sample_size].copy()
-    else:
-        df = df.copy()
+    headers = {"x-api-key": api_key} if api_key else {}
+    params = {"fields": "paperId,externalIds,citationCount,references.externalIds"}
+    backoff = 5.0  # Starts at 5s instead of 10s so transient bursts recover fast
 
-    df['s2_paper_id'] = df['id'].apply(clean_arxiv_id)
-    
-    s2_ids = df['s2_paper_id'].tolist()
-    total_papers = len(df)
-    
-    citation_counts = [0] * total_papers
-    referenced_paper_ids = [[] for _ in range(total_papers)]
-    citation_graph_adj = {}
+    while True:
+        try:
+            response = _paced_post(S2_BATCH_URL, params, {"ids": valid_ids}, headers, timeout=45)
 
-    print(f"Starting Semantic Scholar ingestion for {total_papers} papers...")
+            if response.status_code == 200:
+                return {
+                    qid: pdata
+                    for qid, pdata in zip(valid_ids, response.json())
+                    if isinstance(pdata, dict)
+                }
 
-    for i in range(0, total_papers, batch_size):
-        batch_ids = s2_ids[i:i + batch_size]
-        batch_indices = list(range(i, min(i + batch_size, total_papers)))
-        
-        print(f"Processing batch {i // batch_size + 1}/{(total_papers + batch_size - 1) // batch_size}...", end="\r")
-        
-        api_results = fetch_s2_batch(batch_ids, api_key=api_key)
-        
-        for idx, paper_data in zip(batch_indices, api_results):
-            current_arxiv_id = s2_ids[idx]
-            if not current_arxiv_id or not paper_data or not isinstance(paper_data, dict):
-                continue
+            elif response.status_code == 429:
+                retry_after = float(response.headers.get("Retry-After", backoff))
+                sleep_for = max(retry_after, backoff) + random.uniform(0.5, 1.5)
+                print(f"\n[429 Rate Limit] Sleeping {sleep_for:.1f}s...", flush=True)
+                time.sleep(sleep_for)
+                backoff = min(backoff * 2, 120.0)
 
-            # 1. Inbound Citation Count
-            c_count = paper_data.get('citationCount', 0) or 0
-            citation_counts[idx] = c_count
+            elif response.status_code == 400:
+                if len(valid_ids) == 1:
+                    return {}
+                mid = len(valid_ids) // 2
+                left = fetch_s2_batch_bisect(valid_ids[:mid], api_key=api_key)
+                right = fetch_s2_batch_bisect(valid_ids[mid:], api_key=api_key)
+                left.update(right)
+                return left
 
-            # 2. Extract arXiv IDs for references
-            refs = paper_data.get('references', []) or []
-            target_arxiv_ids = []
-            
-            for ref in refs:
-                if not ref or not ref.get('externalIds'):
+            else:
+                print(f"\n[HTTP {response.status_code}] Retrying in 5s...", flush=True)
+                time.sleep(5.0)
+
+        except Exception as e:
+            print(f"\nRequest exception: {e} — retrying in 5s...", flush=True)
+            time.sleep(5.0)
+
+
+def process_citation_enrichment(df, api_key=None, batch_size=500):
+    df = df.copy()
+    df["s2_paper_id"] = df["id"].apply(clean_arxiv_id)
+
+    # 1. Load existing JSONL checkpoint if resuming
+    cached_records = {}
+    if os.path.exists(CHECKPOINT_JSONL):
+        with open(CHECKPOINT_JSONL, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
                     continue
-                
-                ext_ids = ref.get('externalIds', {})
-                arxiv_ref = ext_ids.get('ArXiv') or ext_ids.get('arxiv')
-                
-                if arxiv_ref:
-                    clean_ref = clean_arxiv_id(arxiv_ref)
-                    if clean_ref:
-                        target_arxiv_ids.append(clean_ref)
+                rec = json.loads(line)
+                cached_records[rec["s2_paper_id"]] = rec
+        print(f"Resumed {len(cached_records):,} papers from '{CHECKPOINT_JSONL}'.")
 
-            referenced_paper_ids[idx] = target_arxiv_ids
-            
-            if current_arxiv_id and target_arxiv_ids:
-                citation_graph_adj[current_arxiv_id] = target_arxiv_ids
+    # 2. Identify uncached valid IDs
+    all_valid_ids = [pid for pid in df["s2_paper_id"].dropna().unique() if pid not in cached_records]
+    total_batches = (len(all_valid_ids) + batch_size - 1) // batch_size
+    print(f"Fetching {len(all_valid_ids):,} remaining papers across {total_batches:,} batches (batch_size={batch_size})...")
 
-        time.sleep(1.05)
+    start_ts = time.monotonic()
 
-    df['citations_count'] = citation_counts
-    df['referenced_paper_ids'] = [json.dumps(refs) for refs in referenced_paper_ids]
+    with open(CHECKPOINT_JSONL, "a", encoding="utf-8") as ckpt_f:
+        for b_idx in range(total_batches):
+            batch_ids = all_valid_ids[b_idx * batch_size : (b_idx + 1) * batch_size]
+            batch_map = fetch_s2_batch_bisect(batch_ids, api_key=api_key)
 
-    with open("citation_graph_adjacency_1000.json", "w") as f:
-        json.dump(citation_graph_adj, f, indent=2)
+            for qid in batch_ids:
+                pdata = batch_map.get(qid)
+                if pdata:
+                    c_count = pdata.get("citationCount", 0) or 0
+                    refs = pdata.get("references", []) or []
+                    target_arxiv_ids = []
+                    for ref in refs:
+                        ext_ids = (ref or {}).get("externalIds") or {}
+                        arxiv_ref = ext_ids.get("ArXiv") or ext_ids.get("arxiv")
+                        if arxiv_ref:
+                            clean_ref = clean_arxiv_id(arxiv_ref)
+                            if clean_ref:
+                                target_arxiv_ids.append(clean_ref)
+                    record = {
+                        "s2_paper_id": qid,
+                        "citations_count": c_count,
+                        "referenced_paper_ids": target_arxiv_ids,
+                    }
+                else:
+                    record = {
+                        "s2_paper_id": qid,
+                        "citations_count": 0,
+                        "referenced_paper_ids": [],
+                    }
 
-    print("\nCitation enrichment complete! Saved 'citation_graph_adjacency.json'.")
+                cached_records[qid] = record
+                ckpt_f.write(json.dumps(record) + "\n")
+
+            if (b_idx + 1) % 10 == 0 or (b_idx + 1) == total_batches:
+                ckpt_f.flush()
+                elapsed_h = (time.monotonic() - start_ts) / 3600.0
+                done_batches = b_idx + 1
+                eta_h = (elapsed_h / done_batches) * (total_batches - done_batches)
+                print(
+                    f"Batch {done_batches:,}/{total_batches:,} "
+                    f"({done_batches / total_batches * 100:.1f}%) | "
+                    f"Elapsed: {elapsed_h:.2f}h | ETA: {eta_h:.2f}h",
+                    end="\r",
+                    flush=True,
+                )
+
+    # 3. Map checkpointed results back to full DataFrame and export
+    df["citations_count"] = df["s2_paper_id"].map(
+        lambda x: cached_records[x]["citations_count"] if x in cached_records else 0
+    )
+    df["referenced_paper_ids"] = df["s2_paper_id"].map(
+        lambda x: json.dumps(cached_records[x]["referenced_paper_ids"]) if x in cached_records else "[]"
+    )
+
+    citation_graph_adj = {
+        qid: rec["referenced_paper_ids"]
+        for qid, rec in cached_records.items()
+        if rec["referenced_paper_ids"]
+    }
+    with open(FINAL_ADJ_JSON, "w", encoding="utf-8") as f:
+        json.dump(citation_graph_adj, f)
+
+    df.to_csv(FINAL_CSV, index=False)
+    print(f"\nDone! Saved '{FINAL_CSV}' and '{FINAL_ADJ_JSON}'.")
     return df
 
+
 if __name__ == "__main__":
-    df = pd.read_csv("arXiv_scientific_dataset.csv")
-    api_key = "s2k-QtvNlkziQkFUwVVrswv263g1qB4Y1tRx7UdgCKIs"
-    
-    # Pass sample_size=1000 for quick testing, or sample_size=None for full run
-    enriched_df = process_citation_enrichment(df, api_key, sample_size=1000)
-    enriched_df.to_csv("arXiv_scientific_dataset_with_citations_1000.csv", index=False)
+    df = pd.read_csv(INPUT_CSV, dtype={"id": str})
+    api_key = "s2k-"
+    process_citation_enrichment(df, api_key=api_key, batch_size=500)
