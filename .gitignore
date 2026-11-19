@@ -3,6 +3,10 @@ node_modules/
 dist/
 .vite/
 
+# Python bytecode cache (regenerated automatically on import)
+__pycache__/
+*.pyc
+
 # Raw dataset (478 MB, over GitHub's 100 MB file limit); download it from Kaggle instead
 data
 .venv
