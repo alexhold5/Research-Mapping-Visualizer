@@ -1,0 +1,46 @@
+# Manually triggered deploy to GitHub Pages.
+#
+# Run it from: Actions tab -> "Deploy to GitHub Pages" -> "Run workflow"
+# The "Use workflow from" dropdown picks which branch gets built and deployed.
+
+name: Deploy to GitHub Pages
+
+on:
+  workflow_dispatch: # manual trigger only: adds the "Run workflow" button
+
+permissions:
+  contents: write # lets the job push the built site to the gh-pages branch
+
+concurrency:
+  group: pages-deploy # if two runs start at once, the second waits for the first
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out the branch you picked
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build the site
+        run: npm run build
+
+      # Only matters if you use React Router's BrowserRouter: when someone
+      # refreshes on a sub-page, Pages serves 404.html, which is now your app.
+      - name: Add 404.html fallback
+        run: cp dist/index.html dist/404.html
+
+      - name: Publish dist/ to the gh-pages branch
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: ./dist
