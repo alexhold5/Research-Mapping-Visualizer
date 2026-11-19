@@ -8,3 +8,9 @@ dist/
 .venv
 outputs
 scibert_embeddings.npy
+# Large data / model outputs 
+*.npy
+*.npy.progress
+/arXiv_full_data.csv
+/enriched_arXiv_scientific_dataset_with_citations.csv
+/enriched_arXiv_scientific_dataset_with_citations_full.csv
