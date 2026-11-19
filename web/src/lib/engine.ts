@@ -7,10 +7,11 @@ import {
   INNER_MAX, FILL, R_MIN, R_MAX, SIZE_CURVE, TITLE_FONT, TITLE_MIN_PX, TITLE_MAX_PX, TITLE_FIT_W, TITLE_FIT_H,
   TITLE_MOVE_START_PX, TITLE_MOVE_END_PX, TITLE_TOP_PX, EDGE_PICK_PX, EDGE_DIM, EDGE_HIGHLIGHT,
   EDGE_WIDTH_BOOST, HALO_WIDTH, HALO_MIN, HALO_MIN_PX, UNIT_SPHERE, HALO_MATERIAL, DIMMED_COLOR, PAPER_LIGHTEN,
+  PAGE_SIZE, PAGE_STEP, DETAIL_BLOCK, GHOST_ALPHA,
 } from '../constants';
 import type {
-  BubbleNode, ClusterFile, ClusterSummary, EdgeTip, FieldFilter, GraphLink, GraphNode, LayoutLink,
-  LoadedCluster, Overview, PaperNode, YearSeries,
+  BubbleNode, ClusterFile, ClusterSummary, DetailsState, EdgeTip, FieldFilter, GraphLink, GraphNode, LayoutLink,
+  LoadedCluster, Overview, PageInfo, PaperDetail, PaperNode, YearSeries,
 } from '../types';
 import { dim, lighten, withAlpha } from './color';
 import { createFieldHelpers } from './fields';
@@ -66,6 +67,8 @@ export function createEngine(container: HTMLElement, overview: Overview) {
   let attached = new Set<GraphLink>(); // citation lines touching the selected paper
   let edgeHoverNode: GraphNode | null = null; // the paper/bubble at the far end of the line under the mouse
   let edgeTip: EdgeTip | null = null;
+  let neighborIds = new Set<string>(); // papers that cite / are cited by the selected paper: drawn even outside their cluster's window
+  let neighborKey = '';
   const loaded = new Map<number, LoadedCluster>();
   const loading = new Set<number>();
   const failed = new Set<number>();
@@ -96,9 +99,14 @@ export function createEngine(container: HTMLElement, overview: Overview) {
 
   const yearVisible = (n: { year: number | null }) =>
     n.year == null ? windowIsFull() : n.year >= windowLo && n.year <= windowHi;
+  // An open cluster draws a window ("page") of its papers in influence order; the arrow keys slide it.
+  const inPage = (n: PaperNode) => n.rank >= n.bubble.pageStart && n.rank < n.bubble.pageStart + PAGE_SIZE;
+  // A paper outside its window is "ghosted": drawn (dimmed) only because it is linked to the selected paper.
+  const isGhost = (n: GraphNode) => n.kind === 'paper' && n !== detailsFor && !inPage(n);
   const isVisible = (n: GraphNode): boolean => {
     if (n.kind === 'cluster') return n.inWindow >= 0.5;
-    return n.bubble.open && yearVisible(n); // a paper shows only while its bubble is open
+    // a paper shows only while its bubble is open
+    return n.bubble.open && yearVisible(n) && (inPage(n) || n === detailsFor || neighborIds.has(n.id));
   };
   // While a graph is being built the library may still hold a link's ends as plain ids rather than
   // node objects, so link functions look the nodes up themselves.
@@ -110,7 +118,13 @@ export function createEngine(container: HTMLElement, overview: Overview) {
     if (!a || !b || !isVisible(a) || !isVisible(b)) return false;
     // The lines between bubbles would run across the papers of an open bubble, so they hide.
     if (l.kind === 'cluster') return !(a as BubbleNode).open && !(b as BubbleNode).open;
+    // A ghosted paper keeps only its line to the selected paper (no lines to bubbles or other papers).
+    if ((isGhost(a) && b !== detailsFor) || (isGhost(b) && a !== detailsFor)) return false;
     return true;
+  }
+  // Re-apply visibility and colors after the open bubbles, a window or the selection changed.
+  function refreshVisibility() {
+    graph.nodeVisibility(isVisible).linkVisibility(linkVisible).nodeColor(nodeColor);
   }
 
   // ---- Bubbles (built once; positions never change) ----
@@ -123,7 +137,7 @@ export function createEngine(container: HTMLElement, overview: Overview) {
     const lines = title.split(' / '); // the clustering names a cluster with a few keywords separated by " / "
     return {
       id: c.id, kind: 'cluster', cluster: c, x, y, z: 0, fx: x, fy: y, fz: 0,
-      fullRadius, shrunk: fullRadius, radius: fullRadius, inWindow: c.size, open: false, px: 0, inView: false,
+      fullRadius, shrunk: fullRadius, radius: fullRadius, inWindow: c.size, open: false, pageStart: 0, px: 0, inView: false,
       title: { lines, centerDims: titleDims(lines), oneLine: [title], topDims: titleDims([title]) },
     };
   });
@@ -152,7 +166,8 @@ export function createEngine(container: HTMLElement, overview: Overview) {
     if (n.kind === 'cluster') return clusterColor(n.cluster);
     // Papers outside the selected field fade out; the rest take their cluster's color.
     if (fieldFilter && fieldKey(n.categoryCode) !== fieldFilter) return DIMMED_COLOR;
-    return lighten(clusterColor(n.bubble.cluster), PAPER_LIGHTEN); // lighter than the bubble, so they stand out inside it
+    const color = lighten(clusterColor(n.bubble.cluster), PAPER_LIGHTEN); // lighter than the bubble, so they stand out inside it
+    return isGhost(n) ? withAlpha(color, GHOST_ALPHA) : color;
   }
   let pxPerUnitNow = 1; // current zoom, kept up to date by updateLOD
   const haloRadius = (n: GraphNode) => n.radius + Math.max(HALO_MIN, n.radius * HALO_WIDTH, HALO_MIN_PX / pxPerUnitNow);
@@ -395,13 +410,8 @@ export function createEngine(container: HTMLElement, overview: Overview) {
   // ---- Papers inside bubbles ----
   // Lay out one cluster's papers inside its bubble. Returns the paper nodes and their links.
   function buildCluster(bubble: BubbleNode, data: ClusterFile): LoadedCluster {
-    // The cluster's own top papers set the layout and the sizes. "Extra" papers (included because another
-    // cluster's line leads to them) are placed in the same frame, at the smallest size.
-    const core = data.nodes.filter((p) => !p.extra);
-    // Size by influence rank (0 = most influential).
-    const ranked = [...core].sort((a, b) => b.influence - a.influence);
-    const rank = new Map(ranked.map((p, i) => [p.id, i]));
-
+    // All of the cluster's papers are laid out once, so a paper never moves when the window slides.
+    const core = data.nodes;
     // Center on the median paper and scale so 90% of papers fill INNER_RADIUS; the few far outliers
     // are squashed inward, so the dense core stays readable.
     const median = (values: number[]) => [...values].sort((a, b) => a - b)[Math.floor(values.length / 2)];
@@ -419,10 +429,11 @@ export function createEngine(container: HTMLElement, overview: Overview) {
       return { x: dx * k, y: dy * k };
     };
     const papers: PaperNode[] = data.nodes.map((p) => {
-      const pct = p.extra ? 0 : ranked.length > 1 ? 1 - rank.get(p.id)! / (ranked.length - 1) : 1;
+      // Size falls off with the log of the rank: the top few stand out, the long tail stays small.
+      const pct = core.length > 1 ? 1 - Math.log1p(p.rank) / Math.log1p(core.length - 1) : 1;
       const { x, y } = place(p);
       return {
-        ...p, kind: 'paper', x, y, z: 0, fx: 0, fy: 0, fz: 0, bubble,
+        ...p, kind: 'paper', arxivId: p.id.replace('ARXIV:', ''), x, y, z: 0, fx: 0, fy: 0, fz: 0, bubble,
         radius: R_MIN + (R_MAX - R_MIN) * Math.pow(pct, SIZE_CURVE),
       };
     });
@@ -687,7 +698,7 @@ export function createEngine(container: HTMLElement, overview: Overview) {
     const key = [...open].join(',');
     if (key !== openKey) {
       openKey = key;
-      graph.nodeVisibility(isVisible).linkVisibility(linkVisible);
+      refreshVisibility();
     }
 
     // The "focused" cluster is the open bubble nearest the middle; the left panel and histogram describe it.
@@ -767,13 +778,42 @@ export function createEngine(container: HTMLElement, overview: Overview) {
         : meta.clusteredPapers;
       return `${inRange.toLocaleString()} of ${total.toLocaleString()}${filterNote} papers`;
     }
-    const own = loaded.get(focused.id)?.papers.filter((p) => !p.extra) ?? [];
-    const matching = own.filter((n) => yearVisible(n) && (!fieldFilter || fieldKey(n.categoryCode) === fieldFilter)).length;
-    return `${matching} of ${own.length} top papers${filterNote ? ` (${filterNote.trim()})` : ''} shown`;
+    const onPage = (loaded.get(focused.id)?.papers ?? []).filter(inPage);
+    const matching = onPage.filter((n) => yearVisible(n) && (!fieldFilter || fieldKey(n.categoryCode) === fieldFilter)).length;
+    return `${matching} of ${onPage.length} papers on this page${filterNote ? ` (${filterNote.trim()})` : ''} shown`;
   }
-  /** How many of the focused cluster's own top papers are loaded (0 until its file arrives). */
-  const focusedPaperCount = () =>
-    focused ? (loaded.get(focused.id)?.papers.filter((p) => !p.extra).length ?? 0) : 0;
+  /** How many papers of the focused cluster are loaded (0 until its file arrives). */
+  const focusedPaperCount = () => (focused ? (loaded.get(focused.id)?.papers.length ?? 0) : 0);
+
+  // ---- The window of papers drawn in the focused cluster ----
+  const maxPageStart = (b: BubbleNode) => Math.max(0, (loaded.get(b.id)?.papers.length ?? 0) - PAGE_SIZE);
+  /** Which papers of the focused cluster are drawn (null until its file has loaded). */
+  function pageInfo(): PageInfo | null {
+    const entry = focused && loaded.get(focused.id);
+    if (!focused || !entry) return null;
+    const total = entry.papers.length;
+    const start = focused.pageStart;
+    return { start, end: Math.min(start + PAGE_SIZE, total), total, canPrev: start > 0, canNext: start < maxPageStart(focused) };
+  }
+  /** Slide the focused cluster's window (the arrow keys and the HUD buttons call this). */
+  function slidePage(direction: 1 | -1) {
+    const b = focused;
+    if (!b || !loaded.has(b.id)) return;
+    const start = Math.min(Math.max(0, b.pageStart + direction * PAGE_STEP), maxPageStart(b));
+    if (start === b.pageStart) return;
+    b.pageStart = start;
+    // The camera stays put; the selected paper stays selected only while it is still in the window.
+    if (detailsFor && detailsFor.bubble === b && !inPage(detailsFor)) closeDetails();
+    refreshVisibility();
+    emit();
+  }
+  /** Slide a paper's cluster window so the paper is inside it (used when a paper outside it gets selected). */
+  function showInPage(n: PaperNode) {
+    if (inPage(n)) return;
+    const start = Math.round((n.rank - PAGE_SIZE / 2) / PAGE_STEP) * PAGE_STEP;
+    n.bubble.pageStart = Math.min(Math.max(0, start), maxPageStart(n.bubble));
+    refreshVisibility();
+  }
 
   function setFieldFilter(key: string | null) {
     fieldFilter = key === fieldFilter ? null : key;
@@ -805,11 +845,33 @@ export function createEngine(container: HTMLElement, overview: Overview) {
   }
 
   // ---- Paper details panel ----
+  // Authors and abstracts live in details/<cluster>/<block>.json, fetched when a paper is selected.
+  const detailBlocks = new Map<string, Promise<Record<string, PaperDetail>>>();
+  const detailStates = new Map<string, DetailsState>();
+  const detailsOf = (n: PaperNode): DetailsState => detailStates.get(n.id) ?? { status: 'loading' };
+  function loadDetails(n: PaperNode) {
+    if (detailStates.get(n.id)?.status === 'ready') return;
+    detailStates.set(n.id, { status: 'loading' });
+    const key = `${n.bubble.id}/${Math.floor(n.rank / DETAIL_BLOCK)}`;
+    let block = detailBlocks.get(key);
+    if (!block) {
+      block = fetchJson<Record<string, PaperDetail>>(`${import.meta.env.BASE_URL}data/details/${key}.json`);
+      detailBlocks.set(key, block);
+      block.catch(() => detailBlocks.delete(key)); // so selecting the paper again retries
+    }
+    block
+      .then((papers) => detailStates.set(n.id, papers[n.id] ? { status: 'ready', ...papers[n.id] } : { status: 'failed' }))
+      .catch((err) => { console.error(err); detailStates.set(n.id, { status: 'failed' }); })
+      .finally(() => { if (!destroyed) emit(); });
+  }
+
   function openDetails(n: PaperNode) {
+    showInPage(n);
     const prev = detailsFor;
     detailsFor = n;
     updateHalo(prev);
     updateHalo(n);
+    loadDetails(n);
     refreshHighlight();
     emit();
   }
@@ -832,10 +894,23 @@ export function createEngine(container: HTMLElement, overview: Overview) {
   // Work out which lines touch the selected paper and restyle: they go bright and thick, the rest dim.
   function refreshHighlight() {
     attached = new Set();
+    const neighbors = new Set<string>();
     if (detailsFor && nodeById.get(detailsFor.id) === detailsFor) {
       for (const l of graph.graphData().links as GraphLink[]) {
-        if (endpoint(l.source) === detailsFor || endpoint(l.target) === detailsFor) attached.add(l);
+        const a = endpoint(l.source);
+        const b = endpoint(l.target);
+        if (a !== detailsFor && b !== detailsFor) continue;
+        attached.add(l);
+        const other = a === detailsFor ? b : a;
+        if (other?.kind === 'paper') neighbors.add(other.id);
       }
+    }
+    // Linked papers outside their cluster's window are drawn as ghosts, so every line ends at a paper.
+    const key = [...neighbors].sort().join(',');
+    neighborIds = neighbors;
+    if (key !== neighborKey) {
+      neighborKey = key;
+      refreshVisibility();
     }
     clearEdgeHover();
     graph.linkColor(linkColor).linkWidth(linkWidth).linkDirectionalArrowLength(arrowLength);
@@ -877,7 +952,7 @@ export function createEngine(container: HTMLElement, overview: Overview) {
       ensureLoaded(l.neighbor!).then(() => {
         flushRebuild();
         if (!destroyed && routed === l.neighbor && !nodeById.has(l.ext!.id)) {
-          openDetails({ ...l.ext!, kind: 'paper', bubble: bubbleOf.get(l.neighbor!)! } as unknown as PaperNode);
+          openDetails({ ...l.ext!, kind: 'paper', bubble: bubbleOf.get(l.neighbor!)!, arxivId: l.ext!.id.replace('ARXIV:', '') } as unknown as PaperNode);
         }
       });
     }
@@ -937,10 +1012,16 @@ export function createEngine(container: HTMLElement, overview: Overview) {
   canvas.addEventListener('pointerleave', onPointerLeave);
 
   // Esc closes the details panel first; pressing it again flies back out to the whole map.
+  // Left / Right slide the window of papers drawn in the focused cluster.
   const onKeyDown = (e: KeyboardEvent) => {
-    if (e.key !== 'Escape' || e.target instanceof HTMLInputElement) return;
-    if (detailsFor) closeDetails();
-    else if (focused || routed !== null) navigate('');
+    if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement) return;
+    if (e.key === 'Escape') {
+      if (detailsFor) closeDetails();
+      else if (focused || routed !== null) navigate('');
+    } else if ((e.key === 'ArrowLeft' || e.key === 'ArrowRight') && focused && !e.altKey && !e.ctrlKey && !e.metaKey && !e.shiftKey) {
+      slidePage(e.key === 'ArrowRight' ? 1 : -1);
+      e.preventDefault();
+    }
   };
   window.addEventListener('keydown', onKeyDown);
 
@@ -999,6 +1080,7 @@ export function createEngine(container: HTMLElement, overview: Overview) {
     loaded,
     get attached() { return attached; },
     get selected() { return detailsFor; },
+    get neighborIds() { return neighborIds; },
     get nodeById() { return nodeById; },
   };
 
@@ -1016,15 +1098,18 @@ export function createEngine(container: HTMLElement, overview: Overview) {
     get windowLo() { return windowLo; },
     get windowHi() { return windowHi; },
     get edgeTip() { return edgeTip; },
+    get page() { return pageInfo(); },
     histogram,
     timelineSummary,
     focusedPaperCount,
+    detailsOf,
     // Actions.
     navigate,
     goHome,
     setFieldFilter,
     setWindow,
     closeDetails,
+    slidePage,
     setSearchHover,
     resetAll,
     destroy,

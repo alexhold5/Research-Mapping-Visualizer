@@ -10,6 +10,7 @@ export function Hud({ engine }: { engine: Engine }) {
   useEngineState(engine);
   const { meta } = engine.overview;
   const focused = engine.focused;
+  const page = engine.page;
 
   return (
     <div id="hud">
@@ -18,10 +19,23 @@ export function Hud({ engine }: { engine: Engine }) {
         <>
           <p id="stats">{focused.cluster.size.toLocaleString()} papers in this cluster</p>
           <p id="hint" className="hint">
-            Showing its {engine.focusedPaperCount()} most influential papers (size = influence rank). Arrows point to
-            the cited paper; lines to other clusters end at their bubble until you zoom into it. Drag to pan to a
-            neighbor.
+            Showing papers in order of influence (size = influence rank). Arrows point to the cited paper; dim dots
+            are papers outside this page that connect to the selected one; lines to other clusters end at their
+            bubble until you zoom into it. Drag to pan to a neighbor.
           </p>
+          {page && (
+            <div id="pager">
+              <button type="button" aria-label="Previous papers" title="Previous (←)" disabled={!page.canPrev} onClick={() => engine.slidePage(-1)}>
+                ‹
+              </button>
+              <span>
+                Papers {page.start + 1}–{page.end} of {page.total} <span className="hint">(← →)</span>
+              </span>
+              <button type="button" aria-label="Next papers" title="Next (→)" disabled={!page.canNext} onClick={() => engine.slidePage(1)}>
+                ›
+              </button>
+            </div>
+          )}
           <div id="selection">
             <button id="back" type="button" onClick={() => engine.navigate('')}>
               ← All clusters

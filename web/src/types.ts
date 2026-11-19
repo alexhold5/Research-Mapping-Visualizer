@@ -60,6 +60,7 @@ export interface Overview {
   links: ClusterLinkRaw[];
 }
 
+/** The light record of one paper (what clusters/<id>.json holds). Papers are listed in influence order. */
 export interface PaperInfo {
   id: string;
   title: string;
@@ -69,17 +70,25 @@ export interface PaperInfo {
   citations: number;
   category: string;
   categoryCode: string;
-  authors: string[];
-  abstract: string;
-  arxivId: string;
+  /** 0 = the most influential paper of its cluster. */
+  rank: number;
 }
 
 export interface RawPaper extends PaperInfo {
   x: number;
   y: number;
-  /** Included only because another cluster's line leads to it. */
-  extra?: boolean;
 }
+
+/** The heavy part (details/<cluster>/<block>.json), fetched when a paper is selected. */
+export interface PaperDetail {
+  authors: string[];
+  abstract: string;
+}
+
+export type DetailsState =
+  | { status: 'loading' }
+  | { status: 'failed' }
+  | ({ status: 'ready' } & PaperDetail);
 
 export interface ExternalPaper extends PaperInfo {
   cluster: number;
@@ -130,6 +139,8 @@ export interface BubbleNode extends NodeBase {
   /** Papers inside the window that match the field filter. */
   inWindow: number;
   open: boolean;
+  /** Rank of the first paper of the window of papers drawn while this bubble is open. */
+  pageStart: number;
   title: TitleInfo;
   px: number;
   inView: boolean;
@@ -142,6 +153,7 @@ export interface BubbleNode extends NodeBase {
 export interface PaperNode extends NodeBase, RawPaper {
   kind: 'paper';
   bubble: BubbleNode;
+  arxivId: string;
 }
 
 export type GraphNode = BubbleNode | PaperNode;
@@ -187,3 +199,12 @@ export interface EdgeTip {
 }
 
 export type FieldFilter = string | null;
+
+/** Which papers of the focused cluster are drawn: ranks start+1 .. end of total. */
+export interface PageInfo {
+  start: number;
+  end: number;
+  total: number;
+  canPrev: boolean;
+  canNext: boolean;
+}

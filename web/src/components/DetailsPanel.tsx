@@ -18,7 +18,9 @@ export function DetailsPanel({ engine }: { engine: Engine }) {
   }, [paper?.id]);
 
   const cluster = paper?.bubble.cluster;
-  const extraAuthors = paper ? paper.authors.length - MAX_AUTHORS : 0;
+  const detail = paper ? engine.detailsOf(paper) : null;
+  const authors = detail?.status === 'ready' ? detail.authors : [];
+  const extraAuthors = authors.length - MAX_AUTHORS;
 
   return (
     <aside id="details" ref={ref} hidden={!paper} aria-live="polite">
@@ -47,11 +49,17 @@ export function DetailsPanel({ engine }: { engine: Engine }) {
           </p>
           <h3>Authors</h3>
           <p id="details-authors">
-            {paper.authors.slice(0, MAX_AUTHORS).join(', ') || 'Unknown'}
+            {detail?.status === 'loading' ? 'Loading…' : authors.slice(0, MAX_AUTHORS).join(', ') || 'Unknown'}
             {extraAuthors > 0 ? ` and ${extraAuthors} more` : ''}
           </p>
           <h3>Abstract</h3>
-          <p id="details-abstract">{paper.abstract || 'No abstract available.'}</p>
+          <p id="details-abstract">{detail?.status === 'loading'
+              ? 'Loading…'
+              : detail?.status === 'failed'
+                ? 'Could not load the abstract.'
+                : detail?.status === 'ready' && detail.abstract
+                  ? detail.abstract
+                  : 'No abstract available.'}</p>
           <a id="details-link" href={`https://arxiv.org/abs/${paper.arxivId}`} target="_blank" rel="noopener noreferrer">
             View on arXiv ↗
           </a>

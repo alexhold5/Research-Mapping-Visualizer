@@ -34,6 +34,11 @@ export const OPEN_HYSTERESIS = 0.8; // an already-open bubble counts as this muc
 export const INNER_RADIUS = 190;   // 90% of a cluster's papers fit within this distance of the center
 export const INNER_MAX = 255;      // outliers are squashed to stay within this distance
 export const FILL = 0.9;           // papers fill this fraction of the bubble's radius
+// An open cluster draws a window ("page") of its papers, in influence order; the arrow keys slide it.
+export const PAGE_SIZE = 50;       // papers drawn at once
+export const PAGE_STEP = 10;       // how far one arrow-key press slides the window
+export const DETAIL_BLOCK = 50;    // papers per details file (must match export_web_data.py)
+export const GHOST_ALPHA = 0.4;    // off-window papers drawn because they connect to the selected paper
 // Paper size is set by influence RANK (the raw scores of a cluster's top papers are too similar).
 export const R_MIN = 5;
 export const R_MAX = 28;
