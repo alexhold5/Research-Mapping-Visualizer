@@ -13,7 +13,7 @@ Outputs (in web/public/data/v2/):
                               year Uint16 (0 = unknown), field Uint8 (index into meta.fields)
   edges/<i % 256>.json      {i: {"r": [refs], "c": [cited by], "o": refs outside the dataset}}
                             (only papers with at least one link are listed)
-  titles/<i % 256>.json     {i: title}
+  titles/<i % 2048>.json    {i: title}
   details/<i % 4096>.json   {i: {id, title, authors, date, citations, category, abstract}}
 
 Only citations with both papers in the CSV become lines, since only those have a dot at each end.
@@ -36,7 +36,7 @@ from export_web_data import normalize_xy, parse_authors, parse_dates, to_decimal
 
 OUT_DIR = os.path.join("web", "public", "data", "v2")
 EDGE_SHARDS = 256
-TITLE_SHARDS = 256    # titles alone, for hover tooltips and neighbor lists (many papers per click)
+TITLE_SHARDS = 2048   # titles alone (~12 KB per file), for hover tooltips and neighbor lists (many papers per click)
 DETAIL_SHARDS = 4096  # full records with abstracts, fetched for the one selected paper
 FIELD_COUNT = 12  # arXiv fields that get their own color; the rest share "other"
 

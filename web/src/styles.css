@@ -531,3 +531,49 @@ html, body {
 #edge-tip span {
   color: #8b92a5;
 }
+
+/* ---- Point-cloud prototype (?view=points): neighbor lists in the details panel ---- */
+.neighbor-row {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  width: 100%;
+  padding: 3px 4px;
+  background: none;
+  border: 0;
+  border-radius: 4px;
+  color: #c4c8d4;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1.35;
+  text-align: left;
+  cursor: pointer;
+}
+
+.neighbor-row:hover {
+  background: rgba(255, 255, 255, 0.07);
+  color: #fff;
+}
+
+.neighbor-row .swatch {
+  flex: none;
+}
+
+.neighbor-row .year {
+  flex: none;
+  margin-left: auto;
+  padding-left: 8px;
+  color: #8b92a5;
+}
+
+.more-rows {
+  margin-top: 4px;
+  padding: 3px 10px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  color: #e6e8ee;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
