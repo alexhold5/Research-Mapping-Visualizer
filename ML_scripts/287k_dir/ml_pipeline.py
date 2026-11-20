@@ -319,6 +319,7 @@ def get_embeddings(df):
 # MAIN PIPELINE EXECUTION (YOUR MODIFIED VERSION)
 # -----------------------------------------------------------------------------
 def run_pipeline(csv_path="arXiv_scientific_dataset.csv", out_file="enriched_arXiv_scientific_dataset.csv", embeddings=None, n_neighbors=15, min_dist=0.05, min_cluster_size=350, min_samples=3, method='eom'):
+    t0 = time.perf_counter()
     # Load dataset
     print(f"Loading data from {csv_path}...")
     df = pd.read_csv(csv_path)
@@ -328,7 +329,7 @@ def run_pipeline(csv_path="arXiv_scientific_dataset.csv", out_file="enriched_arX
         print(f"Subsampling dataset to {SAMPLE_SIZE} rows for quick testing...")
         df = df.sample(n=SAMPLE_SIZE, random_state=42).reset_index(drop=True)
 
-    t0 = time.perf_counter()
+    t1 = time.perf_counter()
     # Handle missing text gracefully
     if embeddings is None:
         scibert_embeddings = get_embeddings(df)
