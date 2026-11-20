@@ -15,3 +15,4 @@ scibert_embeddings.npy
 /enriched_arXiv_scientific_dataset_with_citations.csv
 /enriched_arXiv_scientific_dataset_with_citations_full.csv
 scibert_embeddings_full.npy
+ML_scripts/3.23M_dir/__pycache__
