@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { stripPrefix } from '../lib/html';
+import { stripPrefix } from './util';
 import { loadPoints } from './data';
 import { PaperPanel } from './PaperPanel';
 import { CITER_COLOR, REF_COLOR, createPointEngine } from './pointEngine';
@@ -10,7 +10,7 @@ type LoadState = { status: 'loading' } | { status: 'ready'; data: PointData } | 
 
 const usePointEngine = (engine: PointEngine) => useSyncExternalStore(engine.subscribe, engine.getVersion);
 
-/** Point-cloud prototype (?view=points): every paper as a dot. Data comes from export_points.py. */
+/** The map: every paper as a dot. Data comes from export_points.py. */
 export function PointMap() {
   const [state, setState] = useState<LoadState>({ status: 'loading' });
 
@@ -84,16 +84,35 @@ function PointHud({ engine, firstFrameMs }: { engine: PointEngine; firstFrameMs:
         {meta.noisePapers.toLocaleString()} unclustered ({noiseShare}%)
       </p>
       <p className="hint">
-        Every paper is a dot; color = cluster, grey haze = unclustered (noise). Bigger dots are more influential.
-        Scroll to zoom, drag to pan, click a dot to select it.
+        Every paper is a dot; color ={' '}
+        {engine.colorByField
+          ? `arXiv field (${meta.clusters.length.toLocaleString()} clusters is too many to colour apart — hover for the cluster)`
+          : 'cluster'}
+        , grey haze = unclustered (noise). Bigger dots are more influential. Scroll to zoom, drag to pan, click a
+        dot to select it.
       </p>
+      <p className="hint">
+        Drawing <b>{engine.drawn.toLocaleString()}</b> of {meta.count.toLocaleString()} dots (
+        {Math.round((100 * engine.drawn) / meta.count)}%) — the most influential papers plus an even
+        sample of the rest, so the shape stays honest. Zoom in for more, out for fewer.
+      </p>
+      <label className="hint" style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
+        <input
+          type="checkbox"
+          checked={engine.timeAxis}
+          onChange={(e) => engine.setTimeAxis(e.target.checked)}
+        />
+        <span>
+          Time axis — lift papers by publication year ({meta.yearMin}–{meta.yearMax})
+          {engine.timeAxis && <>; <b>right-drag to tilt</b></>}
+        </span>
+      </label>
       <p className="hint">
         Prototype · {(bytes / 1048576).toFixed(1)} MB
         {firstFrameMs !== null && ` · first frame in ${Math.round(firstFrameMs)} ms`} ·{' '}
         <a href="#" onClick={(e) => { e.preventDefault(); engine.resetView(); }} style={{ color: 'inherit' }}>
           reset view
-        </a>{' '}
-        · <a href={import.meta.env.BASE_URL} style={{ color: 'inherit' }}>back to cluster view</a>
+        </a>
       </p>
       <p className="hint">
         Click a dot to draw its citations: <span style={{ color: REF_COLOR }}>blue</span> = papers it cites,{' '}
@@ -125,7 +144,7 @@ function HoverTip({ engine }: { engine: PointEngine }) {
       }}
     >
       <div>{h.title ?? 'Loading…'}</div>
-      <div style={{ color: engine.clusterCss(c?.id ?? -1), marginTop: 2 }}>
+      <div style={{ color: engine.paperCss(h.index), marginTop: 2 }}>
         {c ? stripPrefix(c.title) : 'Unclustered (noise)'}
         {engine.data.year[h.index] > 0 && <span style={{ color: '#8b92a5' }}> · {engine.data.year[h.index]}</span>}
       </div>

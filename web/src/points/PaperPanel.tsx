@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { Swatch } from '../components/Swatch';
-import { stripPrefix } from '../lib/html';
+import { Swatch } from './Swatch';
+import { stripPrefix } from './util';
 import { CITER_COLOR, REF_COLOR } from './pointEngine';
 import type { PointEngine } from './pointEngine';
 
@@ -52,7 +52,7 @@ export function PaperPanel({ engine }: { engine: PointEngine }) {
         </>
       )}
       <p id="details-cluster">
-        <Swatch color={engine.clusterCss(cluster?.id ?? -1)} />
+        <Swatch color={engine.paperCss(index)} />
         {cluster ? stripPrefix(cluster.title) : 'Unclustered (noise)'}
       </p>
 
@@ -85,8 +85,17 @@ export function PaperPanel({ engine }: { engine: PointEngine }) {
             {detail.authors.slice(0, MAX_AUTHORS).join(', ') || 'Unknown'}
             {extraAuthors > 0 ? ` and ${extraAuthors} more` : ''}
           </p>
-          <h3>Abstract</h3>
-          <p id="details-abstract">{detail.abstract || 'No abstract available.'}</p>
+          {engine.data.meta.hasAbstracts !== false && (
+            <>
+              <h3>Abstract</h3>
+              <p id="details-abstract">{detail.abstract || 'No abstract available.'}</p>
+              {detail.truncated && (
+                <p className="hint" style={{ marginTop: -4 }}>
+                  Trimmed to keep the dataset small — the full abstract is on arXiv.
+                </p>
+              )}
+            </>
+          )}
           <a id="details-link" href={`https://arxiv.org/abs/${arxivId}`} target="_blank" rel="noopener noreferrer">
             View on arXiv ↗
           </a>
@@ -143,7 +152,7 @@ function NeighborRow({ engine, index }: { engine: PointEngine; index: number }) 
           engine.centerOn(index);
         }}
       >
-        <Swatch color={engine.clusterCss(cluster?.id ?? -1)} />
+        <Swatch color={engine.paperCss(index)} />
         <span>{title ?? '…'}</span>
         {year > 0 && <span className="year">{year}</span>}
       </button>

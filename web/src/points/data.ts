@@ -1,4 +1,4 @@
-import { fetchJson } from '../lib/html';
+import { fetchJson } from './util';
 import type { ColumnInfo, EdgeEntry, PaperDetail, PointData, PointsMeta } from './types';
 
 export const DATA_URL = `${import.meta.env.BASE_URL}data/v2/`;

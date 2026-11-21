@@ -29,8 +29,13 @@ export function createGrid(x: Float32Array, y: Float32Array, res = 512) {
   const items = new Uint32Array(n);
   for (let i = 0; i < n; i++) items[fill[cellOf[i]]++] = i;
 
-  /** The point nearest (px, py) within `radius` (world units), or -1. */
-  const nearest = (px: number, py: number, radius: number): number => {
+  /**
+   * The point nearest (px, py) within `radius` (world units), or -1.
+   *
+   * `visible` filters to the points actually on screen: the renderer draws only a slice of the
+   * index buffer at low zoom, and hovering a dot that isn't drawn would be a lie.
+   */
+  const nearest = (px: number, py: number, radius: number, visible?: (i: number) => boolean): number => {
     const c0 = col(px - radius), c1 = col(px + radius);
     const r0 = row(py - radius), r1 = row(py + radius);
     let best = -1;
@@ -40,6 +45,7 @@ export function createGrid(x: Float32Array, y: Float32Array, res = 512) {
         const k = r * res + c;
         for (let j = start[k]; j < start[k + 1]; j++) {
           const i = items[j];
+          if (visible && !visible(i)) continue;
           const dx = x[i] - px, dy = y[i] - py;
           const d = dx * dx + dy * dy;
           if (d <= bestD) {
@@ -52,5 +58,38 @@ export function createGrid(x: Float32Array, y: Float32Array, res = 512) {
     return best;
   };
 
-  return { nearest };
+  // Visit every point whose cell lies within `radius` of the segment (ax,ay)-(bx,by), each
+  // point exactly once. Used for picking a tilted view: the cursor's ray is perpendicular to an
+  // orthographic image plane, so every point along it lands on the same pixel, and the
+  // candidates form a thin tube whose shadow on the plane is this segment.
+  const stamp = new Int32Array(res * res);
+  let token = 0;
+  const eachAlongSegment = (
+    ax: number, ay: number, bx: number, by: number, radius: number, fn: (i: number) => void,
+  ) => {
+    token++;
+    const len = Math.hypot(bx - ax, by - ay);
+    const steps = Math.max(1, Math.ceil(len / Math.min(cellW, cellH)));
+    const rc = Math.ceil(radius / cellW);
+    const rr = Math.ceil(radius / cellH);
+    for (let s = 0; s <= steps; s++) {
+      const f = s / steps;
+      const c = col(ax + (bx - ax) * f);
+      const r = row(ay + (by - ay) * f);
+      for (let dr = -rr; dr <= rr; dr++) {
+        const rowI = r + dr;
+        if (rowI < 0 || rowI >= res) continue;
+        for (let dc = -rc; dc <= rc; dc++) {
+          const colI = c + dc;
+          if (colI < 0 || colI >= res) continue;
+          const k = rowI * res + colI;
+          if (stamp[k] === token) continue;
+          stamp[k] = token;
+          for (let j = start[k]; j < start[k + 1]; j++) fn(items[j]);
+        }
+      }
+    }
+  };
+
+  return { nearest, eachAlongSegment };
 }

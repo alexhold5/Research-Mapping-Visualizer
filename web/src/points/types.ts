@@ -1,6 +1,11 @@
-import type { Field } from '../types';
-
 // ---- What export_points.py writes to data/v2/ ----
+
+/** One arXiv field (or archive) that gets its own colour; the last entry is always "other". */
+export interface Field {
+  code: string;
+  name: string;
+  papers: number;
+}
 
 export interface ColumnInfo {
   name: 'x' | 'y' | 'influence' | 'cluster' | 'year' | 'field';
@@ -25,6 +30,8 @@ export interface PointsMeta {
   titleShards: number;
   detailShards: number;
   noisePapers: number;
+  /** False when the export dropped abstracts to keep the payload small. */
+  hasAbstracts?: boolean;
   yearMin: number;
   yearMax: number;
   /** The biggest fields, then a final "other" entry. */
@@ -67,5 +74,8 @@ export interface PaperDetail {
   date: string | null;
   citations: number;
   category: string;
-  abstract: string;
+  /** Absent when the export ran with --abstract-chars -1. */
+  abstract?: string;
+  /** The abstract was trimmed by export_points.py; the full text is on arXiv. */
+  truncated?: boolean;
 }
