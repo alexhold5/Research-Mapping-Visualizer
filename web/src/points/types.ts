@@ -1,4 +1,4 @@
-// ---- What export_points.py writes to data/v2/ ----
+// ---- What export_points.py writes to data/points/ ----
 
 /** One arXiv field (or archive) that gets its own colour; the last entry is always "other". */
 export interface Field {
@@ -26,12 +26,7 @@ export interface PointCluster {
 export interface PointsMeta {
   count: number;
   columns: ColumnInfo[];
-  edgeShards: number;
-  titleShards: number;
-  detailShards: number;
   noisePapers: number;
-  /** False when the export dropped abstracts to keep the payload small. */
-  hasAbstracts?: boolean;
   yearMin: number;
   yearMax: number;
   /** The biggest fields, then a final "other" entry. */
@@ -54,28 +49,4 @@ export interface PointData {
   /** Bytes downloaded and time taken, for the HUD. */
   bytes: number;
   loadMs: number;
-}
-
-/** edges/<i % edgeShards>.json */
-export interface EdgeEntry {
-  /** Papers this one cites. */
-  r: number[];
-  /** Papers that cite this one. */
-  c: number[];
-  /** References to papers outside the dataset (no dot to draw a line to). */
-  o?: number;
-}
-
-/** details/<i % detailShards>.json */
-export interface PaperDetail {
-  id: string;
-  title: string;
-  authors: string[];
-  date: string | null;
-  citations: number;
-  category: string;
-  /** Absent when the export ran with --abstract-chars -1. */
-  abstract?: string;
-  /** The abstract was trimmed by export_points.py; the full text is on arXiv. */
-  truncated?: boolean;
 }

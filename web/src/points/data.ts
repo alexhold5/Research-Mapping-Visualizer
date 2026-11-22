@@ -1,7 +1,7 @@
 import { fetchJson } from './util';
-import type { ColumnInfo, EdgeEntry, PaperDetail, PointData, PointsMeta } from './types';
+import type { ColumnInfo, PointData, PointsMeta } from './types';
 
-export const DATA_URL = `${import.meta.env.BASE_URL}data/v2/`;
+export const DATA_URL = `${import.meta.env.BASE_URL}data/points/`;
 
 const ARRAY_TYPES = {
   float32: Float32Array,
@@ -34,31 +34,5 @@ export async function loadPoints(): Promise<PointData> {
     field: column('field') as Uint8Array,
     bytes: buffer.byteLength,
     loadMs: performance.now() - started,
-  };
-}
-
-/**
- * Lazily fetched, cached shards: paper `i` lives in `<dir>/<i % shards>.json` under the key `i`.
- * A failed fetch is forgotten so the next request retries it.
- */
-export function createShardCache<T>(dir: string, shards: number) {
-  const cache = new Map<number, Promise<Record<string, T>>>();
-  return (i: number): Promise<T | undefined> => {
-    const s = i % shards;
-    let shard = cache.get(s);
-    if (!shard) {
-      shard = fetchJson<Record<string, T>>(`${DATA_URL}${dir}/${s}.json`);
-      shard.catch(() => cache.delete(s));
-      cache.set(s, shard);
-    }
-    return shard.then((records) => records[i]);
-  };
-}
-
-export function createShardLoaders(meta: PointsMeta) {
-  return {
-    title: createShardCache<string>('titles', meta.titleShards),
-    edges: createShardCache<EdgeEntry>('edges', meta.edgeShards),
-    detail: createShardCache<PaperDetail>('details', meta.detailShards),
   };
 }

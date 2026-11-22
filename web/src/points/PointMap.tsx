@@ -1,8 +1,7 @@
 import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { stripPrefix } from './util';
 import { loadPoints } from './data';
-import { PaperPanel } from './PaperPanel';
-import { CITER_COLOR, REF_COLOR, createPointEngine } from './pointEngine';
+import { createPointEngine } from './pointEngine';
 import type { PointEngine } from './pointEngine';
 import type { PointData } from './types';
 
@@ -10,7 +9,7 @@ type LoadState = { status: 'loading' } | { status: 'ready'; data: PointData } | 
 
 const usePointEngine = (engine: PointEngine) => useSyncExternalStore(engine.subscribe, engine.getVersion);
 
-/** The map: every paper as a dot. Data comes from export_points.py. */
+/** The global view: every paper as a dot, for seeing how arXiv clusters. Data comes from export_points.py. */
 export function PointMap() {
   const [state, setState] = useState<LoadState>({ status: 'loading' });
 
@@ -30,7 +29,7 @@ export function PointMap() {
   if (state.status === 'ready') return <PointScene data={state.data} />;
   return (
     <div id="hud">
-      <h1>Research Map · all papers</h1>
+      <h1>Research Map · global view</h1>
       <p id="stats">
         {state.status === 'loading'
           ? 'Loading every paper…'
@@ -43,14 +42,11 @@ export function PointMap() {
 function PointScene({ data }: { data: PointData }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [engine, setEngine] = useState<PointEngine | null>(null);
-  const [firstFrameMs, setFirstFrameMs] = useState<number | null>(null);
 
   useEffect(() => {
-    const started = performance.now();
     const e = createPointEngine(containerRef.current!, data);
     setEngine(e);
     if (import.meta.env.DEV) (window as unknown as { pointEngine: typeof e }).pointEngine = e; // for debugging in the console
-    requestAnimationFrame(() => setFirstFrameMs(data.loadMs + performance.now() - started));
     return () => {
       e.destroy();
       setEngine(null);
@@ -62,8 +58,7 @@ function PointScene({ data }: { data: PointData }) {
       <div id="graph" ref={containerRef} />
       {engine && (
         <>
-          <PointHud engine={engine} firstFrameMs={firstFrameMs} />
-          <PaperPanel engine={engine} />
+          <PointHud engine={engine} />
           <HoverTip engine={engine} />
         </>
       )}
@@ -71,52 +66,38 @@ function PointScene({ data }: { data: PointData }) {
   );
 }
 
-function PointHud({ engine, firstFrameMs }: { engine: PointEngine; firstFrameMs: number | null }) {
+function PointHud({ engine }: { engine: PointEngine }) {
   usePointEngine(engine);
-  const { meta, bytes } = engine.data;
+  const { meta } = engine.data;
   const noiseShare = Math.round((100 * meta.noisePapers) / meta.count);
 
   return (
     <div id="hud" style={{ pointerEvents: 'auto' }}>
-      <h1>Research Map · all papers</h1>
+      <h1>Research Map · global view</h1>
       <p id="stats">
-        {meta.count.toLocaleString()} papers · {meta.clusters.length} clusters ·{' '}
+        {meta.count.toLocaleString()} papers · {meta.clusters.length.toLocaleString()} clusters ·{' '}
         {meta.noisePapers.toLocaleString()} unclustered ({noiseShare}%)
       </p>
       <p className="hint">
-        Every paper is a dot; color ={' '}
-        {engine.colorByField
-          ? `arXiv field (${meta.clusters.length.toLocaleString()} clusters is too many to colour apart — hover for the cluster)`
-          : 'cluster'}
-        , grey haze = unclustered (noise). Bigger dots are more influential. Scroll to zoom, drag to pan, click a
-        dot to select it.
+        Every paper is a dot, coloured by {engine.colorByField ? 'its arXiv group' : 'its cluster'}; grey haze = unclustered. Hover a dot to see its
+        cluster. To find individual papers, switch to the Clustered View.
       </p>
       <p className="hint">
         Drawing <b>{engine.drawn.toLocaleString()}</b> of {meta.count.toLocaleString()} dots (
-        {Math.round((100 * engine.drawn) / meta.count)}%) — the most influential papers plus an even
-        sample of the rest, so the shape stays honest. Zoom in for more, out for fewer.
+        {Math.round((100 * engine.drawn) / meta.count)}%): the most influential papers plus an even sample of the
+        rest. Zoom in for more.
       </p>
       <label className="hint" style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
-        <input
-          type="checkbox"
-          checked={engine.timeAxis}
-          onChange={(e) => engine.setTimeAxis(e.target.checked)}
-        />
+        <input type="checkbox" checked={engine.timeAxis} onChange={(e) => engine.setTimeAxis(e.target.checked)} />
         <span>
-          Time axis — lift papers by publication year ({meta.yearMin}–{meta.yearMax})
+          Time axis: lift papers by submission year ({meta.yearMin}–{meta.yearMax})
           {engine.timeAxis && <>; <b>right-drag to tilt</b></>}
         </span>
       </label>
       <p className="hint">
-        Prototype · {(bytes / 1048576).toFixed(1)} MB
-        {firstFrameMs !== null && ` · first frame in ${Math.round(firstFrameMs)} ms`} ·{' '}
         <a href="#" onClick={(e) => { e.preventDefault(); engine.resetView(); }} style={{ color: 'inherit' }}>
           reset view
         </a>
-      </p>
-      <p className="hint">
-        Click a dot to draw its citations: <span style={{ color: REF_COLOR }}>blue</span> = papers it cites,{' '}
-        <span style={{ color: CITER_COLOR }}>orange</span> = papers citing it. Esc or empty space clears.
       </p>
     </div>
   );
@@ -127,6 +108,7 @@ function HoverTip({ engine }: { engine: PointEngine }) {
   const h = engine.hovered;
   if (!h) return null;
   const c = engine.clusterOf(h.index);
+  const year = engine.data.year[h.index];
   return (
     <div
       style={{
@@ -143,10 +125,10 @@ function HoverTip({ engine }: { engine: PointEngine }) {
         pointerEvents: 'none',
       }}
     >
-      <div>{h.title ?? 'Loading…'}</div>
-      <div style={{ color: engine.paperCss(h.index), marginTop: 2 }}>
-        {c ? stripPrefix(c.title) : 'Unclustered (noise)'}
-        {engine.data.year[h.index] > 0 && <span style={{ color: '#8b92a5' }}> · {engine.data.year[h.index]}</span>}
+      <div style={{ color: engine.paperCss(h.index) }}>{c ? stripPrefix(c.title) : 'Unclustered'}</div>
+      <div style={{ color: '#8b92a5', marginTop: 2 }}>
+        {engine.fieldOf(h.index)}
+        {year > 0 && ` · ${year}`}
       </div>
     </div>
   );

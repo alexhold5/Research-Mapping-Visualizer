@@ -1,12 +1,11 @@
 import {
-  BufferAttribute, BufferGeometry, Color, LineSegments, Mesh, MeshBasicMaterial,
+  BufferAttribute, BufferGeometry, Color, Mesh, MeshBasicMaterial,
   Matrix4, OrthographicCamera, Points, RingGeometry, Scene, ShaderMaterial, Vector3, WebGLRenderer,
 } from 'three';
 import { MapControls } from 'three/examples/jsm/controls/MapControls.js';
 import { FIELD_COLORS, OTHER_COLOR } from './util';
-import { createShardLoaders } from './data';
 import { createGrid } from './grid';
-import type { EdgeEntry, PaperDetail, PointData } from './types';
+import type { PointData } from './types';
 
 // ---------------------------------------------------------------------------
 // Point-cloud prototype: every paper is one dot at its fixed UMAP position, noise included.
@@ -27,11 +26,6 @@ const INFLUENCE_SIZE = 2.5; // the most influential papers are up to (1 + this) 
 const PICK_PX = 6;          // hover/click reach around the cursor, in CSS px
 const CLICK_SLOP_PX = 4;    // a press that moves further than this is a drag, not a click
 const FIT_MARGIN = 1.05;
-const SELECTED_FADE = 0.18; // while a paper is selected, every other dot keeps this much of its opacity
-export const REF_COLOR = '#5fb4ff';     // lines to papers the selected paper cites
-export const CITER_COLOR = '#ff8a5c';   // lines to papers that cite it
-const LINE_OPACITY = 0.55;
-const PANEL_PX = 380; // width of the details panel (#details in styles.css)
 // Past this many clusters, per-cluster hues stop being telling apart -- 8,490 clusters on the
 // full dataset would be confetti. Above it, dots take their arXiv field's colour instead, which
 // shows the macro structure; the cluster title still appears on hover and in the panel.
@@ -85,24 +79,6 @@ const FRAGMENT = /* glsl */ `
   }
 `;
 
-const LINE_VERTEX = /* glsl */ `
-  attribute vec3 aLineColor;
-  uniform float uZ;
-  varying vec3 vColor;
-  void main() {
-    vColor = aLineColor;
-    gl_Position = projectionMatrix * modelViewMatrix * vec4(position.xy, position.z * uZ, 1.0);
-  }
-`;
-
-const LINE_FRAGMENT = /* glsl */ `
-  uniform float uOpacity;
-  varying vec3 vColor;
-  void main() {
-    gl_FragColor = vec4(vColor, uOpacity);
-  }
-`;
-
 export type PointEngine = ReturnType<typeof createPointEngine>;
 
 export interface HoverInfo {
@@ -114,21 +90,9 @@ export interface HoverInfo {
   title?: string;
 }
 
-export interface Selection {
-  index: number;
-  /** undefined while loading; null when the paper has no citation data at all. */
-  edges?: EdgeEntry | null;
-  detail?: PaperDetail | null;
-  /** The neighbors, most influential first. */
-  refs: number[];
-  citers: number[];
-  error?: string;
-}
-
 export function createPointEngine(container: HTMLElement, data: PointData) {
   const { meta, x, y, influence, cluster } = data;
   const n = meta.count;
-  const loaders = createShardLoaders(meta);
   const grid = createGrid(x, y);
   const clusterById = new Map(meta.clusters.map((c) => [c.id, c]));
 
@@ -148,8 +112,6 @@ export function createPointEngine(container: HTMLElement, data: PointData) {
 
   // ---- State ----
   let hovered: HoverInfo | null = null;
-  let selection: Selection | null = null;
-  let highlighted: number | null = null; // the paper whose row the mouse is over in the details panel
   let destroyed = false;
 
   // ---- Colors ----
@@ -275,62 +237,7 @@ export function createPointEngine(container: HTMLElement, data: PointData) {
   const material = makeDotMaterial();
   const points = new Points(geometry, material);
 
-  // While a paper is selected: lines to its neighbors, then the neighbors redrawn at full opacity on top
-  // of the faded map. Both are rebuilt on every selection (a few to a few thousand vertices).
-  const lineMaterial = new ShaderMaterial({
-    vertexShader: LINE_VERTEX,
-    fragmentShader: LINE_FRAGMENT,
-    uniforms: { uZ: { value: 0 }, uOpacity: { value: LINE_OPACITY } },
-    transparent: true, depthTest: false, depthWrite: false,
-  });
-  const lines = new LineSegments(new BufferGeometry(), lineMaterial);
-  lines.renderOrder = 1;
-  lines.frustumCulled = false;
-  const overlayMaterial = makeDotMaterial();
-  const overlay = new Points(new BufferGeometry(), overlayMaterial);
-  overlay.renderOrder = 2;
-  overlay.frustumCulled = false;
-  const refRgb = new Color(REF_COLOR);
-  const citerRgb = new Color(CITER_COLOR);
-
-  /** Rebuild the lines and neighbor dots for the current selection (or clear them). */
-  const buildSelectionLayers = () => {
-    lines.geometry.dispose();
-    overlay.geometry.dispose();
-    lines.geometry = new BufferGeometry();
-    overlay.geometry = new BufferGeometry();
-    if (!selection) {
-      material.uniforms.uFade.value = 1;
-      return;
-    }
-    material.uniforms.uFade.value = SELECTED_FADE;
-    const s = selection.index;
-    const neighbors = [...selection.refs.map((j) => [j, refRgb] as const), ...selection.citers.map((j) => [j, citerRgb] as const)];
-    const linePos = new Float32Array(neighbors.length * 6);
-    const lineCol = new Float32Array(neighbors.length * 6);
-    neighbors.forEach(([j, rgb], k) => {
-      linePos.set([x[s], y[s], zOf(s), x[j], y[j], zOf(j)], k * 6);
-      lineCol.set([rgb.r, rgb.g, rgb.b, rgb.r, rgb.g, rgb.b], k * 6);
-    });
-    lines.geometry.setAttribute('position', new BufferAttribute(linePos, 3));
-    lines.geometry.setAttribute('aLineColor', new BufferAttribute(lineCol, 3));
-
-    // Neighbors first, the selected paper last so it sits on top.
-    const dots = [...new Set([...neighbors.map(([j]) => j), s])].filter((j) => j !== s).concat(s);
-    const pos = new Float32Array(dots.length * 3);
-    const col = new Uint8Array(dots.length * 4);
-    const size = new Float32Array(dots.length);
-    dots.forEach((j, k) => {
-      pos.set([x[j], y[j], zOf(j)], k * 3);
-      col.set([colors[j * 4], colors[j * 4 + 1], colors[j * 4 + 2], 255], k * 4);
-      size[k] = Math.max(sizes[j], 1.6) * (j === s ? 1.6 : 1);
-    });
-    overlay.geometry.setAttribute('position', new BufferAttribute(pos, 3));
-    overlay.geometry.setAttribute('aColor', new BufferAttribute(col, 4, true));
-    overlay.geometry.setAttribute('aSize', new BufferAttribute(size, 1));
-  };
-
-  // Rings around the hovered and the selected paper; scaled every frame to stay a fixed size on screen.
+  // Ring around the hovered paper; scaled every frame to stay a fixed size on screen.
   const ringGeometry = new RingGeometry(0.75, 1, 40);
   const makeRing = (color: number) => {
     const ring = new Mesh(ringGeometry, new MeshBasicMaterial({ color, depthTest: false, transparent: true }));
@@ -339,7 +246,6 @@ export function createPointEngine(container: HTMLElement, data: PointData) {
     return ring;
   };
   const hoverRing = makeRing(0xffffff);
-  const selectRing = makeRing(0xffd166);
 
   // ---- Scene ----
   const renderer = new WebGLRenderer({ antialias: false });
@@ -349,8 +255,7 @@ export function createPointEngine(container: HTMLElement, data: PointData) {
 
   const scene = new Scene();
   hoverRing.renderOrder = 3;
-  selectRing.renderOrder = 3;
-  scene.add(points, lines, overlay, hoverRing, selectRing);
+  scene.add(points, hoverRing);
   const camera = new OrthographicCamera(-1, 1, 1, -1, -100, 100);
   // The map lies in the XY plane and the time axis rises along +Z, so +Z is "up" for the orbit.
   // With three's default +Y up, starting overhead would put the camera on the equator and
@@ -450,8 +355,6 @@ export function createPointEngine(container: HTMLElement, data: PointData) {
 
   const setZUniform = (v: number) => {
     material.uniforms.uZ.value = v;
-    overlayMaterial.uniforms.uZ.value = v;
-    lineMaterial.uniforms.uZ.value = v;
   };
 
   const placeRing = (ring: Mesh, i: number | null) => {
@@ -479,9 +382,7 @@ export function createPointEngine(container: HTMLElement, data: PointData) {
       }
       applyLod();
       material.uniforms.uPx.value = dotPx();
-      overlayMaterial.uniforms.uPx.value = dotPx();
-      placeRing(hoverRing, hovered?.index ?? highlighted);
-      placeRing(selectRing, selection?.index ?? null);
+      placeRing(hoverRing, hovered?.index ?? null);
       renderer.render(scene, camera);
       if (zNow !== zTarget) requestRender(); // keep animating
     });
@@ -594,12 +495,6 @@ export function createPointEngine(container: HTMLElement, data: PointData) {
       return;
     }
     hovered = { index: i, screenX: sx, screenY: sy };
-    loaders.title(i).then((title) => {
-      if (hovered?.index === i && !destroyed) {
-        hovered = { ...hovered, title: title ?? '(untitled)' };
-        emit();
-      }
-    }).catch((err) => console.error(err));
     emit();
     requestRender();
   };
@@ -624,76 +519,21 @@ export function createPointEngine(container: HTMLElement, data: PointData) {
     pressX = e.clientX;
     pressY = e.clientY;
   };
-  const onUp = (e: PointerEvent) => {
+  const onUp = () => {
     pressed = false;
-    if (Math.hypot(e.clientX - pressX, e.clientY - pressY) > CLICK_SLOP_PX) return;
-    select(pick(e.clientX, e.clientY));
   };
   const onLeave = () => setHover(-1, 0, 0);
-  const onKey = (e: KeyboardEvent) => {
-    if (e.key === 'Escape') select(null);
-  };
   const canvas = renderer.domElement;
   canvas.addEventListener('pointermove', onMove);
   canvas.addEventListener('pointerdown', onDown);
   canvas.addEventListener('pointerup', onUp);
   canvas.addEventListener('pointerleave', onLeave);
-  window.addEventListener('keydown', onKey);
 
   const observer = new ResizeObserver(resize);
   observer.observe(container);
   resize();
 
   // ---- Actions ----
-  const byInfluence = (a: number, b: number) => influence[b] - influence[a];
-
-  /** Select paper i (-1 or null clears), then load its citation links and details. */
-  function select(i: number | null) {
-    if (i === null || i < 0) {
-      selection = null;
-      highlighted = null;
-    } else if (selection?.index !== i) {
-      selection = { index: i, refs: [], citers: [] };
-      highlighted = null;
-      const current = selection;
-      const update = (patch: Partial<Selection>) => {
-        if (selection !== current || destroyed) return; // a newer selection replaced this one
-        selection = Object.assign(current, patch);
-        if (patch.edges !== undefined) buildSelectionLayers();
-        emit();
-        requestRender();
-      };
-      loaders.edges(i).then(
-        (e) => update({ edges: e ?? null, refs: [...(e?.r ?? [])].sort(byInfluence), citers: [...(e?.c ?? [])].sort(byInfluence) }),
-        (err: Error) => update({ edges: null, error: err.message }),
-      );
-      loaders.detail(i).then(
-        (d) => update({ detail: d ?? null }),
-        (err: Error) => update({ detail: null, error: err.message }),
-      );
-    }
-    buildSelectionLayers();
-    emit();
-    requestRender();
-  }
-
-  /** Ring a paper while the mouse is over its row in the details panel (null clears). */
-  function highlight(i: number | null) {
-    if (highlighted === i) return;
-    highlighted = i;
-    requestRender();
-  }
-
-  /** Pan (keeping the zoom) so paper i is in the middle of the part of the screen the details panel leaves free. */
-  function centerOn(i: number) {
-    const panelPx = Math.min(PANEL_PX, width - 32) + 16;
-    const cx = x[i] + panelPx / 2 / pxPerWorld();
-    camera.position.set(cx, y[i], camera.position.z);
-    controls.target.set(cx, y[i], 0);
-    controls.update();
-    requestRender();
-  }
-
   const DEFAULT_TILT = 1.0; // radians off straight-down when the time axis is switched on
 
   /**
@@ -753,17 +593,11 @@ export function createPointEngine(container: HTMLElement, data: PointData) {
     canvas.removeEventListener('pointerdown', onDown);
     canvas.removeEventListener('pointerup', onUp);
     canvas.removeEventListener('pointerleave', onLeave);
-    window.removeEventListener('keydown', onKey);
-    controls.dispose();
+      controls.dispose();
     geometry.dispose();
     material.dispose();
-    lines.geometry.dispose();
-    lineMaterial.dispose();
-    overlay.geometry.dispose();
-    overlayMaterial.dispose();
     ringGeometry.dispose();
     (hoverRing.material as MeshBasicMaterial).dispose();
-    (selectRing.material as MeshBasicMaterial).dispose();
     renderer.dispose();
     canvas.remove();
     listeners.clear();
@@ -771,15 +605,12 @@ export function createPointEngine(container: HTMLElement, data: PointData) {
 
   return {
     data,
-    loaders,
     subscribe,
     getVersion: () => version,
     get hovered() {
       return hovered;
     },
-    get selection() {
-      return selection;
-    },
+    fieldOf: (i: number) => meta.fields[data.field[i]]?.name ?? '',
     clusterOf: (i: number) => clusterById.get(cluster[i]) ?? null,
     clusterCss,
     paperCss,
@@ -792,9 +623,6 @@ export function createPointEngine(container: HTMLElement, data: PointData) {
     get drawn() {
       return drawCount;
     },
-    select,
-    highlight,
-    centerOn,
     resetView,
     destroy,
   };

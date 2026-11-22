@@ -12,6 +12,10 @@ web/public/data/details/
 .venv
 outputs
 scibert_embeddings.npy
+
+# TEMPORARY: PUBLISH ONCE READY TO SMOKETEST DEPLOYMENT
+web/public/data/maps
+web/public/data/points
 # Large data / model outputs 
 *.npy
 *.npy.progress
