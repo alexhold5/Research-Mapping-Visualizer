@@ -4,6 +4,15 @@ import type { TitleDims } from './lib/titleSprite';
 // ---- What export_web_data.py writes ----
 
 export interface Meta {
+  /** Drill-down maps only (export_maps.py): which map this is, its name, and the map "back" goes to. */
+  mapId?: string;
+  title?: string;
+  /** root = all of arXiv (bubbles are groups), group = e.g. cs (categories), category = e.g. cs.AI (clusters). */
+  level?: 'root' | 'group' | 'category';
+  parent?: string | null;
+  parentTitle?: string | null;
+  /** How each cluster's papers were picked: by influence score, or a random sample (before there were scores). */
+  ranked?: 'influence' | 'random';
   totalPapers: number;
   clusteredPapers: number;
   noisePapers: number;
@@ -43,6 +52,10 @@ export interface ClusterSummary {
   fi: Record<string, number[]>;
   x: number;
   y: number;
+  /** Drill-down maps: clicking this bubble opens that map (e.g. a category's own cluster map). */
+  map?: string;
+  /** Drill-down maps: what zooming into this bubble shows. */
+  inner?: 'categories' | 'clusters' | 'papers';
 }
 
 export interface ClusterLinkRaw {
@@ -79,6 +92,8 @@ export interface RawPaper extends PaperInfo {
   y: number;
   /** Included only because another cluster's line leads to it. */
   extra?: boolean;
+  /** Drill-down maps: this node stands for a whole cluster of another map, which clicking it opens. */
+  opens?: { map: string; cluster?: number; papers: number };
 }
 
 export interface ExternalPaper extends PaperInfo {

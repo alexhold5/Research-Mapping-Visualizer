@@ -15,6 +15,8 @@ import type {
 import { dim, lighten, withAlpha } from './color';
 import { createFieldHelpers } from './fields';
 import { escapeHtml, fetchJson, stripPrefix } from './html';
+import { expandClusterFile } from './slim';
+import type { SlimClusterFile } from './slim';
 import { resolveOverlaps } from './layout';
 import { distanceToSegment, lerp, smoothstep } from './math';
 import { noRaycast } from './raycast';
@@ -34,7 +36,19 @@ import { makeTitleSprite, titleDims } from './titleSprite';
 
 export type Engine = ReturnType<typeof createEngine>;
 
-export function createEngine(container: HTMLElement, overview: Overview) {
+export interface EngineOptions {
+  /** Folder the cluster files load from (ends with "/"): data/ for the original map, data/maps/<id>/ for drill-down maps. */
+  dataDir: string;
+  /**
+   * Called to switch maps: a bubble that leads to another map (its `map` field) was clicked, or a node standing for
+   * a cluster of another map (its `opens` field), in which case `cluster` is the cluster to fly to there.
+   */
+  onOpenMap?: (mapId: string, cluster?: number) => void;
+  /** The cluster files are in the compact drill-down format (lib/slim.ts). */
+  slim?: boolean;
+}
+
+export function createEngine(container: HTMLElement, overview: Overview, options: EngineOptions) {
   const { meta, clusters, fields } = overview;
   const clusterById = new Map(clusters.map((c) => [c.id, c]));
   const fieldHelpers = createFieldHelpers(fields);
@@ -200,12 +214,24 @@ export function createEngine(container: HTMLElement, overview: Overview) {
         ${inRange.toLocaleString()} papers${note}<br/>
         Mostly ${escapeHtml(c.categoryName)} (${Math.round(c.categoryShare * 100)}%)<br/>
         Top paper: ${escapeHtml(c.topPaper)}<br/>
-        <span style="color:#8b92a5">Click or zoom in to open</span>`;
+        <span style="color:#8b92a5">${c.map ? 'Click to open its map · zoom in to see its clusters' : 'Click or zoom in to open'}</span>`;
     }
+    if (n.opens) {
+      const whole = n.opens.cluster === undefined; // the node stands for a whole category map, not one cluster
+      return `
+        <b>${escapeHtml(n.title)}</b><br/>
+        ${n.opens.papers.toLocaleString()} papers${whole ? '' : ` · a cluster of ${escapeHtml(n.opens.map)}`}<br/>
+        <span style="color:#8b92a5">Click to open ${whole ? 'its map' : `it in the ${escapeHtml(n.opens.map)} map`}</span>`;
+    }
+    // Citation counts and influence aren't in every dataset yet; leave out what is missing.
+    const stats = [
+      n.citations ? `${n.citations.toLocaleString()} citations` : '',
+      n.influence ? `influence ${n.influence.toFixed(2)}` : '',
+    ].filter(Boolean).join(' · ');
     return `
       <b>${escapeHtml(n.title)}</b><br/>
       ${escapeHtml(n.date ?? 'unknown date')} · ${escapeHtml(n.category)}<br/>
-      ${n.citations.toLocaleString()} citations · influence ${n.influence.toFixed(2)}<br/>
+      ${stats ? `${stats}<br/>` : ''}
       <span style="color:#8b92a5">${escapeHtml(stripPrefix(n.bubble.cluster.title))}</span>`;
   }
 
@@ -257,7 +283,10 @@ export function createEngine(container: HTMLElement, overview: Overview) {
       if (n?.kind === 'cluster' || prev?.kind === 'cluster') graph.linkColor(linkColor); // re-apply so the lines re-color
     })
     .onNodeClick((n: GraphNode) => {
-      if (n.kind === 'cluster') navigate(`#cluster=${n.id}`);
+      // Drill down a level: a category bubble opens its map; one of its cluster nodes opens that map at that cluster.
+      if (n.kind === 'cluster' && n.cluster.map && options.onOpenMap) options.onOpenMap(n.cluster.map);
+      else if (n.kind === 'paper' && n.opens && options.onOpenMap) options.onOpenMap(n.opens.map, n.opens.cluster);
+      else if (n.kind === 'cluster') navigate(`#cluster=${n.id}`);
       else selectPaper(n);
     })
     // A click on empty space follows a highlighted line if one is right there; otherwise it deselects.
@@ -525,8 +554,10 @@ export function createEngine(container: HTMLElement, overview: Overview) {
     if (loaded.has(id)) return Promise.resolve(loaded.get(id));
     if (!pending.has(id)) {
       loading.add(id);
-      pending.set(id, fetchJson<ClusterFile>(`${import.meta.env.BASE_URL}data/clusters/${id}.json`)
-        .then((data) => {
+      pending.set(id, fetchJson<ClusterFile | SlimClusterFile>(`${options.dataDir}clusters/${id}.json`)
+        .then((raw) => {
+          // Drill-down maps store their files compactly (lib/slim.ts); the original map's files are used as they are.
+          const data = options.slim ? expandClusterFile(raw as SlimClusterFile, id, overview) : (raw as ClusterFile);
           if (destroyed) return;
           loaded.set(id, buildCluster(bubbleOf.get(id)!, data));
           evictOld(id);
@@ -769,7 +800,8 @@ export function createEngine(container: HTMLElement, overview: Overview) {
     }
     const own = loaded.get(focused.id)?.papers.filter((p) => !p.extra) ?? [];
     const matching = own.filter((n) => yearVisible(n) && (!fieldFilter || fieldKey(n.categoryCode) === fieldFilter)).length;
-    return `${matching} of ${own.length} top papers${filterNote ? ` (${filterNote.trim()})` : ''} shown`;
+    const what = focused.cluster.inner && focused.cluster.inner !== 'papers' ? focused.cluster.inner : 'top papers';
+    return `${matching} of ${own.length} ${what}${filterNote ? ` (${filterNote.trim()})` : ''} shown`;
   }
   /** How many of the focused cluster's own top papers are loaded (0 until its file arrives). */
   const focusedPaperCount = () =>
@@ -1021,6 +1053,8 @@ export function createEngine(container: HTMLElement, overview: Overview) {
     focusedPaperCount,
     // Actions.
     navigate,
+    /** Switch to another map (drill-down maps only). */
+    openMap: (mapId: string, cluster?: number) => options.onOpenMap?.(mapId, cluster),
     goHome,
     setFieldFilter,
     setWindow,

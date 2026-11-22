@@ -531,3 +531,21 @@ html, body {
 #edge-tip span {
   color: #8b92a5;
 }
+
+/* "← Up to cs" on drill-down maps (export_maps.py) */
+#hud .map-back {
+  margin: 2px 0 4px;
+  padding: 3px 10px;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 6px;
+  color: #e6e8ee;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+#hud .map-back:hover {
+  background: rgba(255, 255, 255, 0.16);
+}
