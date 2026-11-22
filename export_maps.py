@@ -41,6 +41,7 @@ from arxiv_categories import category_name, group_name
 from export_web_data import normalize_xy
 
 CSV = os.path.join("web", "public", "data", "enriched_arXiv_scientific_full_dataset.csv")
+INFLUENCE = os.path.join("web", "public", "data", "influence_full.csv")  # from add_influence.py; used if it exists
 OUT_DIR = os.path.join("web", "public", "data", "maps")
 ROOT = "arxiv"     # id of the top map
 PER_BUBBLE = 50    # papers shown when a cluster is zoomed into
@@ -69,8 +70,9 @@ def submission_years(ids):
     return year.astype("int16"), (year + (mm - 1) / 12).astype("float32")
 
 
-def load(csv_path):
-    """Every paper, without titles. Text columns become categoricals and numbers float32 to keep memory low."""
+def load(csv_path, influence_path=INFLUENCE):
+    """Every paper, without titles. Text columns become categoricals and numbers float32 to keep memory low.
+    influence_score comes from the CSV if it has the column, else from the add_influence.py sidecar if that exists."""
     started = time.time()
     has_influence = "influence_score" in pd.read_csv(csv_path, nrows=0).columns
     cols = READ + (["influence_score"] if has_influence else [])
@@ -90,7 +92,13 @@ def load(csv_path):
         df[c] = union_categoricals([p[c] for p in parts], ignore_order=True)
     del parts
     df["group"] = df["primary_cat"].map(lambda c: c.split(".")[0]).astype("category")
-    if not has_influence:
+    if not has_influence and influence_path and os.path.exists(influence_path):
+        side = pd.read_csv(influence_path, dtype={"id": str, "influence_score": "float32"})
+        if len(side) != len(df) or not (side["id"].to_numpy() == df["id"].to_numpy()).all():
+            raise SystemExit(f"{influence_path} does not match {csv_path} row for row; rerun add_influence.py")
+        df["influence_score"] = side["influence_score"].to_numpy()
+        has_influence = True
+    elif not has_influence:
         df["influence_score"] = np.float32(0)
     print(f"Loaded {len(df):,} papers in {time.time() - started:.0f}s "
           f"({'ranking by influence_score' if has_influence else 'no influence_score yet: papers are a random sample'})")
