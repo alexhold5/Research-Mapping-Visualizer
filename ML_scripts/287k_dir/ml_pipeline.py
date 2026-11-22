@@ -239,60 +239,66 @@ def generate_cluster_titles(df, cluster_col='cluster_label', text_col='summary',
     return cluster_titles
 
 
-def load_graph_from_json(json_path, df):
+def load_graph_from_json(json_path: str, df) -> nx.DiGraph:
     """
     Loads citation_graph_adjacency.json into a NetworkX DiGraph.
-    Matches arXiv-to-arXiv edges directly against dataset papers.
+    Includes all dataset papers (including dangling sink nodes) and adds
+    in-dataset edges in bulk.
     """
-    with open(json_path, 'r') as f:
+    with open(json_path, "r", encoding="utf-8") as f:
         adj_dict = json.load(f)
 
+    # 1. Collect all valid dataset IDs (includes dangling out-degree=0 nodes)
+    dataset_ids = set(df["s2_paper_id"].dropna().astype(str))
+
     G = nx.DiGraph()
-    
-    # 1. Collect all valid dataset IDs
-    dataset_ids = set(df['s2_paper_id'].dropna().astype(str))
-    
-    # Add all dataset papers as nodes
     G.add_nodes_from(dataset_ids)
 
-    # 2. Build edges matching source and target arXiv IDs
-    edge_count = 0
-    for source_id, target_ids in adj_dict.items():
-        if source_id in dataset_ids:
-            for target_id in target_ids:
-                if target_id in dataset_ids:
-                    G.add_edge(source_id, target_id)
-                    edge_count += 1
+    # 2. Stream valid edges in bulk via generator (avoids millions of method-call overheads)
+    edges = (
+        (source_id, target_id)
+        for source_id, target_ids in adj_dict.items()
+        if source_id in dataset_ids
+        for target_id in target_ids
+        if target_id in dataset_ids and target_id != source_id
+    )
+    G.add_edges_from(edges)
 
-    print(f"Graph constructed: {G.number_of_nodes()} nodes, {edge_count} in-dataset edges.")
+    print(
+        f"Graph constructed: {G.number_of_nodes():,} nodes, "
+        f"{G.number_of_edges():,} in-dataset edges."
+    )
     return G
 
+def calculate_influence_scores(df, graph=None, w_citations: float = 0.5, w_pagerank: float = 0.5):
+    """
+    Computes landmark influence scores combining log-scaled global OpenAlex
+    citation volume and log-scaled internal arXiv PageRank centrality.
+    """
+    n_papers = len(df)
+    if n_papers == 0:
+        return np.array([])
 
-def calculate_influence_scores(df, graph=None):
-    """
-    Computes final landmark influence scores combining 
-    log-scaled citation counts and network PageRank centrality.
-    """
-    # 1. Citation Volume Signal
-    citations = df['citations_count'].fillna(0).values
+    # 1. Global Citation Volume Signal (log-scaled + 99.9th percentile cap)
+    citations = df["citations_count"].fillna(0).clip(lower=0).values
     log_citations = np.log1p(citations)
-    
-    # 2. Graph Centrality Signal (PageRank)
-    if len(graph.edges) > 0:
+    cit_cap = np.percentile(log_citations, 99.9) or 1.0
+    norm_citations = np.clip(log_citations / cit_cap, 0.0, 1.0)
+
+    # 2. Internal Network Centrality Signal (log-scaled relative to baseline PR floor)
+    if graph is not None and graph.number_of_edges() > 0:
         pr_dict = nx.pagerank(graph, alpha=0.85)
-        pageranks = np.array([pr_dict.get(pid, 0.0) for pid in df['s2_paper_id']])
+        raw_pr = np.array([pr_dict.get(pid, 0.0) for pid in df["s2_paper_id"]], dtype=np.float64)
+        # Multiply by N so baseline dangling/unconnected node PR is ~0.15, then log1p-scale
+        log_pr = np.log1p(raw_pr * max(1, graph.number_of_nodes()))
+        pr_cap = np.percentile(log_pr, 99.9) or 1.0
+        norm_pageranks = np.clip(log_pr / pr_cap, 0.0, 1.0)
     else:
-        pageranks = np.zeros(len(df))
-        
-    # 3. Combine Signals (50% Citation volume, 50% PageRank)
+        norm_pageranks = np.zeros(n_papers, dtype=np.float64)
+
+    # 3. Balanced Blend & Final [0.1, 1.0] Scaling
+    raw_score = (w_citations * norm_citations) + (w_pagerank * norm_pageranks)
     scaler = MinMaxScaler(feature_range=(0.1, 1.0))
-    
-    # Normalize components individually before combining
-    norm_citations = MinMaxScaler().fit_transform(log_citations.reshape(-1, 1)).flatten()
-    norm_pageranks = MinMaxScaler().fit_transform(pageranks.reshape(-1, 1)).flatten() if len(graph.edges) > 0 else np.zeros(len(df))
-    
-    raw_score = (0.5 * norm_citations) + (0.5 * norm_pageranks)
-    
     return scaler.fit_transform(raw_score.reshape(-1, 1)).flatten()
 
 def get_embeddings(df):
@@ -395,8 +401,8 @@ def run_from_grid_result(grid_result, csv_path="arXiv_scientific_dataset_with_ci
 
     # Optional Influence Score computation
     # G = nx.erdos_renyi_graph(n=len(df), p=0.001, directed=True)
-    # G = load_graph_from_json("citation_graph_adjacency.json", df)
-    # df['influence_score'] = calculate_influence_scores(df, graph=G)
+    G = load_graph_from_json("data/citation_graph_adjacency.json", df)
+    df['influence_score'] = calculate_influence_scores(df, graph=G)
 
 
     # Save enriched output for visualization layers
@@ -496,7 +502,7 @@ if __name__ == "__main__":
     OUTPUT_DIR = "cs_dataset_clustering2"
     os.makedirs(f"outputs/{OUTPUT_DIR}", exist_ok=True)
     df = run_from_grid_result(f"outputs/global_grid_outputs/TightIslands_r0.0030_mcs862_ms5_leaf_p0.90.csv", csv_path="data/arXiv_scientific_dataset_with_citations.csv", out_file=f"outputs/{OUTPUT_DIR}/enriched_arXiv_scientific_dataset.csv")
-    
+    print(df.columns)
     # snapshot only post pipeline
     # df = pd.read_csv(f"outputs/{OUTPUT_DIR}/enriched_arXiv_scientific_dataset.csv")
 

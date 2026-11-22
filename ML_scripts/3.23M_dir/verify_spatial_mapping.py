@@ -5,7 +5,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 
-ENRICHED_CSV = "./outputs/full_dataset_clustering/enriched_arXiv_scientific_dataset.csv"
+ENRICHED_CSV = "./outputs/full_dataset_clustering/enriched_arXiv_scientific_full_dataset.csv"
 OUT_PLOT = "./outputs/full_dataset_clustering/spatial_hierarchy_full_map.png"
 
 TOP_N_CATEGORIES = 150        # Categories highlighted in left panel & terminal printout

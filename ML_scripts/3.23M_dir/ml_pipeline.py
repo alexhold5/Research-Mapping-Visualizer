@@ -102,65 +102,101 @@ def compute_hdbscan_clusters(coords_2d, min_cluster_size, min_samples, method):
     )
     return clusterer.fit_predict(coords_2d)
 
+_CLEAN_RE = re.compile(r"https?://\S+|www\.\S+|\\[a-zA-Z]+|_[a-zA-Z0-9]+|\b\d+\b")
 
-def deduplicate_phrases(phrases, top_n=3):
-    """Filters out phrase subsets, plurals, and corrupted short tokens."""
+_BANNED_PHRASES = {
+    "achieves state", "state art", "achieves state art", "experimental results",
+    "real world", "future work", "open source", "large scale", "end end",
+    "proposed method", "proposed approach", "novel approach", "novel method",
+    "extensive experiments", "benchmark datasets", "empirical study",
+    "significant improvements", "outperforms existing", "tuned perform",
+    "scientific research", "dans les", "et al",
+}
+
+
+def deduplicate_phrases(phrases, top_n=3, max_overlap_ratio=0.5):
+    """
+    Filters out phrase subsets, supersets, plurals, boilerplate fragments,
+    corrupted short tokens, and sliding-window overlapping bigrams.
+    """
     selected, selected_stem_sets = [], []
-    
+
     for phrase in phrases:
-        if len(phrase) < 4 or phrase.isdigit():
+        p_clean = phrase.strip().lower()
+        if len(p_clean) < 4 or p_clean.isdigit() or p_clean in _BANNED_PHRASES:
             continue
-            
-        tokens = phrase.lower().split()
-        stemmed_tokens = {re.sub(r'(ing|es|s)$', '', t) for t in tokens}
-        
-        is_subset = any(stemmed_tokens.issubset(existing) for existing in selected_stem_sets)
-        is_superset = any(existing.issubset(stemmed_tokens) for existing in selected_stem_sets)
-        
-        if not is_subset and not is_superset:
+
+        tokens = p_clean.split()
+        # Reject single-letter artifacts (e.g., 'u', 's', 'x') from stripped LaTeX
+        if any(len(t) < 2 for t in tokens):
+            continue
+
+        stemmed_tokens = {re.sub(r"(ing|ed|es|s)$", "", t) for t in tokens}
+
+        is_redundant = False
+        for existing in selected_stem_sets:
+            overlap = len(stemmed_tokens & existing)
+            min_len = min(len(stemmed_tokens), len(existing))
+            if min_len > 0 and (overlap / min_len) >= max_overlap_ratio:
+                is_redundant = True
+                break
+
+        if not is_redundant:
             selected.append(phrase.title())
             selected_stem_sets.append(stemmed_tokens)
             if len(selected) == top_n:
                 break
-                
+
     return selected
 
-_CLEAN_RE = re.compile(r"https?://\S+|www\.\S+|\\[a-zA-Z]+|_[a-zA-Z0-9]+")
 
 def generate_cluster_titles(
     df,
     cluster_col="cluster_label",
     text_col="summary",
+    score_col="influence_score",
     top_n=3,
     cat_col="primary_cat",
     max_cluster_coverage=0.20,
     max_iter=5,
-    max_papers_per_cluster=2500,
+    max_papers_per_cluster=500,
 ):
     cluster_title_map = {-1: "Noise / Unclustered"}
 
     base_stops = list(
         set(TfidfVectorizer(stop_words="english").get_stop_words()).union(
             {
-                "paper", "method", "methods", "models", "model", "results",
-                "proposed", "propose", "using", "based", "approach", "show",
-                "data", "experiments", "extensive", "code", "available", "github",
+                "paper", "papers", "method", "methods", "models", "model", "results",
+                "proposed", "propose", "proposes", "using", "used", "based", "approach",
+                "show", "shows", "shown", "data", "dataset", "datasets", "experiments",
+                "extensive", "code", "available", "github", "achieve", "achieves",
+                "outperform", "outperforms", "performance", "perform", "problem",
+                "task", "tasks", "framework", "study", "analysis", "novel", "new",
+                "dans", "les", "des", "pour", "avec", "sur", "par", "une", "que",
             }
         )
     )
 
-    for cat_name, cat_df in df.groupby(cat_col, sort=False):
-        clean_df = cat_df[cat_df[cluster_col] != -1].dropna(subset=[text_col])
-        if clean_df.empty:
+    # Filter noise and pre-sort ONCE by influence_score descending (avoids per-group sorting)
+    valid_df = df[df[cluster_col] != -1].dropna(subset=[text_col])
+    if score_col in valid_df.columns:
+        valid_df = valid_df.sort_values(score_col, ascending=False, kind="mergesort")
+    elif "citations_count" in valid_df.columns:
+        valid_df = valid_df.sort_values("citations_count", ascending=False, kind="mergesort")
+
+    for cat_name, cat_df in valid_df.groupby(cat_col, sort=False):
+        if cat_df.empty:
             continue
 
-        sampled = (
-            clean_df.sample(frac=1, random_state=42)
-            .groupby(cluster_col, as_index=False, sort=False)
-            .head(max_papers_per_cluster)
+        # Already sorted by influence_score descending, so .head() takes the top landmark papers
+        sampled = cat_df.groupby(cluster_col, as_index=False, sort=False).head(max_papers_per_cluster)
+        cleaned_texts = sampled[text_col].str.replace(_CLEAN_RE, " ", regex=True)
+
+        grouped = (
+            cleaned_texts.groupby(sampled[cluster_col], sort=False)
+            .apply(" ".join)
+            .reset_index(name=text_col)
         )
-        sampled[text_col] = sampled[text_col].str.replace(_CLEAN_RE, " ", regex=True)
-        grouped = sampled.groupby(cluster_col)[text_col].apply(" ".join).reset_index()
         num_clusters = len(grouped)
 
         if num_clusters == 1:
@@ -181,7 +217,9 @@ def generate_cluster_titles(
         for _ in range(max_iter):
             candidate_counts = {}
             for idx in range(num_clusters):
-                row = tfidf_matrix[idx].tocsr()
+                row = tfidf_matrix[idx]
+                if row.nnz == 0:
+                    continue
                 top_idx = row.indices[row.data.argsort()[-20:][::-1]]
                 for i in top_idx:
                     if i not in disabled_indices:
@@ -197,71 +235,78 @@ def generate_cluster_titles(
 
         for idx, c_id in enumerate(grouped[cluster_col]):
             c_id = int(c_id)
-            row = tfidf_matrix[idx].tocsr()
+            row = tfidf_matrix[idx]
             sorted_indices = row.indices[row.data.argsort()[::-1]]
             valid_candidates = [
                 features[i] for i in sorted_indices if i not in disabled_indices
-            ][:15]
+            ][:20]
 
             keywords = deduplicate_phrases(valid_candidates, top_n=top_n)
             cluster_title_map[c_id] = f"Cluster {c_id} ({cat_name}): " + " / ".join(keywords)
 
     return cluster_title_map
 
-def load_graph_from_json(json_path, df):
+
+def load_graph_from_json(json_path: str, df) -> nx.DiGraph:
     """
     Loads citation_graph_adjacency.json into a NetworkX DiGraph.
-    Matches arXiv-to-arXiv edges directly against dataset papers.
+    Includes all dataset papers (including dangling sink nodes) and adds
+    in-dataset edges in bulk.
     """
-    with open(json_path, 'r') as f:
+    with open(json_path, "r", encoding="utf-8") as f:
         adj_dict = json.load(f)
 
+    # 1. Collect all valid dataset IDs (includes dangling out-degree=0 nodes)
+    dataset_ids = set(df["s2_paper_id"].dropna().astype(str))
+
     G = nx.DiGraph()
-    
-    # 1. Collect all valid dataset IDs
-    dataset_ids = set(df['s2_paper_id'].dropna().astype(str))
-    
-    # Add all dataset papers as nodes
     G.add_nodes_from(dataset_ids)
 
-    # 2. Build edges matching source and target arXiv IDs
-    edge_count = 0
-    for source_id, target_ids in adj_dict.items():
-        if source_id in dataset_ids:
-            for target_id in target_ids:
-                if target_id in dataset_ids:
-                    G.add_edge(source_id, target_id)
-                    edge_count += 1
+    # 2. Stream valid edges in bulk via generator (avoids millions of method-call overheads)
+    edges = (
+        (source_id, target_id)
+        for source_id, target_ids in adj_dict.items()
+        if source_id in dataset_ids
+        for target_id in target_ids
+        if target_id in dataset_ids and target_id != source_id
+    )
+    G.add_edges_from(edges)
 
-    print(f"Graph constructed: {G.number_of_nodes()} nodes, {edge_count} in-dataset edges.")
+    print(
+        f"Graph constructed: {G.number_of_nodes():,} nodes, "
+        f"{G.number_of_edges():,} in-dataset edges."
+    )
     return G
 
+def calculate_influence_scores(df, graph=None, w_citations: float = 0.5, w_pagerank: float = 0.5):
+    """
+    Computes landmark influence scores combining log-scaled global OpenAlex
+    citation volume and log-scaled internal arXiv PageRank centrality.
+    """
+    n_papers = len(df)
+    if n_papers == 0:
+        return np.array([])
 
-def calculate_influence_scores(df, graph=None):
-    """
-    Computes final landmark influence scores combining 
-    log-scaled citation counts and network PageRank centrality.
-    """
-    # 1. Citation Volume Signal
-    citations = df['citations_count'].fillna(0).values
+    # 1. Global Citation Volume Signal (log-scaled + 99.9th percentile cap)
+    citations = df["citations_count"].fillna(0).clip(lower=0).values
     log_citations = np.log1p(citations)
-    
-    # 2. Graph Centrality Signal (PageRank)
-    if len(graph.edges) > 0:
+    cit_cap = np.percentile(log_citations, 99.9) or 1.0
+    norm_citations = np.clip(log_citations / cit_cap, 0.0, 1.0)
+
+    # 2. Internal Network Centrality Signal (log-scaled relative to baseline PR floor)
+    if graph is not None and graph.number_of_edges() > 0:
         pr_dict = nx.pagerank(graph, alpha=0.85)
-        pageranks = np.array([pr_dict.get(pid, 0.0) for pid in df['s2_paper_id']])
+        raw_pr = np.array([pr_dict.get(pid, 0.0) for pid in df["s2_paper_id"]], dtype=np.float64)
+        # Multiply by N so baseline dangling/unconnected node PR is ~0.15, then log1p-scale
+        log_pr = np.log1p(raw_pr * max(1, graph.number_of_nodes()))
+        pr_cap = np.percentile(log_pr, 99.9) or 1.0
+        norm_pageranks = np.clip(log_pr / pr_cap, 0.0, 1.0)
     else:
-        pageranks = np.zeros(len(df))
-        
-    # 3. Combine Signals (50% Citation volume, 50% PageRank)
+        norm_pageranks = np.zeros(n_papers, dtype=np.float64)
+
+    # 3. Balanced Blend & Final [0.1, 1.0] Scaling
+    raw_score = (w_citations * norm_citations) + (w_pagerank * norm_pageranks)
     scaler = MinMaxScaler(feature_range=(0.1, 1.0))
-    
-    # Normalize components individually before combining
-    norm_citations = MinMaxScaler().fit_transform(log_citations.reshape(-1, 1)).flatten()
-    norm_pageranks = MinMaxScaler().fit_transform(pageranks.reshape(-1, 1)).flatten() if len(graph.edges) > 0 else np.zeros(len(df))
-    
-    raw_score = (0.5 * norm_citations) + (0.5 * norm_pageranks)
-    
     return scaler.fit_transform(raw_score.reshape(-1, 1)).flatten()
 
 def get_embeddings(df):
@@ -357,6 +402,9 @@ def run_from_grid_result(grid_result, csv_path="arXiv_scientific_dataset_with_ci
     gc.collect()
     print("data written")
 
+    G = load_graph_from_json("data/citation_graph_adjacency_full.json", df)
+    df['influence_score'] = calculate_influence_scores(df, graph=G)
+
     # 3. Dynamic Clustering & Metainfo
     t0 = time.perf_counter()
     cluster_title_map = generate_cluster_titles(df, cluster_col='cluster_label', text_col='summary', top_n=3)
@@ -365,9 +413,6 @@ def run_from_grid_result(grid_result, csv_path="arXiv_scientific_dataset_with_ci
 
     # Optional Influence Score computation
     # G = nx.erdos_renyi_graph(n=len(df), p=0.001, directed=True)
-    # G = load_graph_from_json("citation_graph_adjacency.json", df)
-    # df['influence_score'] = calculate_influence_scores(df, graph=G)
-
 
     # Save enriched output for visualization layers
     # output_filename = f"enriched_{csv_path}"
@@ -541,7 +586,7 @@ if __name__ == "__main__":
     # pipeline from grid search results
     OUTPUT_DIR = "full_dataset_clustering"
     os.makedirs(f"outputs/{OUTPUT_DIR}", exist_ok=True)
-    df = run_from_grid_result(f"outputs/master_taxonomy_clusters.csv", csv_path="data/arXiv_full_dataset.csv", out_file=f"outputs/{OUTPUT_DIR}/enriched_arXiv_scientific_dataset.csv")
+    df = run_from_grid_result(f"outputs/primary_cat_grid_outputs/master_taxonomy_clusters.csv", csv_path=f"outputs/{OUTPUT_DIR}/enriched_arXiv_scientific_full_dataset.csv", out_file=f"outputs/{OUTPUT_DIR}/enriched_arXiv_scientific_full_dataset.csv")
     
     # snapshot only post pipeline
     # df = pd.read_csv(f"outputs/{OUTPUT_DIR}/enriched_arXiv_scientific_dataset.csv")
@@ -549,5 +594,5 @@ if __name__ == "__main__":
     graph_snapshot = create_snapshot(
         df,
         max_titles_to_label=15,
-        output_image=f"outputs/{OUTPUT_DIR}/snapshot2.png"
+        output_image=f"outputs/{OUTPUT_DIR}/snapshot.png"
     )
