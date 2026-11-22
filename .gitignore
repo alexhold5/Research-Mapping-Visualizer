@@ -7,6 +7,8 @@ dist/
 /arXiv_scientific_dataset_with_citations.csv
 # Enriched full-dataset output of ml_pipeline.py (534 MB)
 /enriched_arXiv_scientific_dataset.csv
+# Full hierarchical-clustering output, ~3.2M papers (4.3 GB)
+/enriched_arXiv_scientific_full_dataset.csv
 
 # Python
 __pycache__/

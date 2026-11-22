@@ -17,3 +17,20 @@ cd visualization && python -m http.server  # then open http://localhost:8000
 ```
 
 The page loads the JSON with `fetch`, so it must be served over HTTP. Opening it with `file://` won't work.
+
+# Presentation analyses
+
+`presentation.html` is a one-page summary for the project presentation (not the production site). It loads `presentation_data.json`, which `../presentation_analysis.py` builds from the full clustered dataset (`enriched_arXiv_scientific_full_dataset.csv`, ~3.2M papers, 8,490 clusters within 152 primary categories).
+
+1. **Cluster dynamics**: each cluster's share of each year's papers, with a log-linear growth rate over the last 5 years (expanding at least +10%/yr, contracting at most -10%/yr). Publication year comes from the arXiv ID, not `updated_date`.
+2. **Influence efficiency**: citations divided by the mean for the same publication year, averaged per cluster, then compared across size quartiles and growth status.
+3. **Cross-disciplinary breakthroughs**: top-2% papers by normalized citations, ranked by a boundary score that combines embedding-neighborhood cluster entropy with the cluster and category entropy of their citers.
+
+Citation counts and the citation graph only cover the ~287k AI/ML papers in `enriched_arXiv_scientific_dataset.csv` and `citation_graph_adjacency.json`, so analyses 2 and 3 are limited to that subset.
+
+```bash
+python presentation_analysis.py enriched_arXiv_scientific_full_dataset.csv --out visualization/presentation_data.json
+cd visualization && python -m http.server   # open http://localhost:8000/presentation.html
+```
+
+The script also accepts a Parquet copy of the CSV, which loads much faster.
