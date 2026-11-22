@@ -12,3 +12,5 @@ dist/
 
 # Python
 __pycache__/
+# Full citation graph for the whole corpus (786 MB)
+/citation_graph_adjacency_full.json
