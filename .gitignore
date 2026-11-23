@@ -13,9 +13,7 @@ web/public/data/details/
 outputs
 scibert_embeddings.npy
 web/public/data/citation_graph_adjacency_full.json
-# TEMPORARY: PUBLISH ONCE READY TO SMOKETEST DEPLOYMENT
-web/public/data/maps
-web/public/data/points
+
 # Large data / model outputs 
 *.npy
 *.npy.progress
