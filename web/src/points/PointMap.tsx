@@ -93,8 +93,13 @@ function PointHud({ engine, firstFrameMs }: { engine: PointEngine; firstFrameMs:
       </p>
       <p className="hint">
         Drawing <b>{engine.drawn.toLocaleString()}</b> of {meta.count.toLocaleString()} dots (
-        {Math.round((100 * engine.drawn) / meta.count)}%) — the most influential papers plus an even
-        sample of the rest, so the shape stays honest. Zoom in for more, out for fewer.
+        {engine.drawn / meta.count < 0.01
+          ? (100 * engine.drawn) / meta.count < 0.1
+            ? '<0.1'
+            : ((100 * engine.drawn) / meta.count).toFixed(1)
+          : Math.round((100 * engine.drawn) / meta.count)}
+        %). Dense and sparse parts of the map are thinned to the same on-screen spacing, keeping the
+        most influential paper in each patch, so nothing clogs. Zoom in for more, out for fewer.
       </p>
       <label className="hint" style={{ display: 'flex', alignItems: 'center', gap: 6, cursor: 'pointer' }}>
         <input

@@ -42,9 +42,25 @@ const MANY_CLUSTERS = 200;
 // zoomed out is that they overplot into a solid mass and you lose the landmarks. The draw-order
 // index is already sorted least-to-most influential, so "show only the top K" is a draw range
 // over its tail -- O(1), no buffer rewrite, no fetching.
-const LOD_BASE = 120_000;   // dots drawn at the fully-zoomed-out view...
-const LOD_GROWTH = 1.9;     // ...multiplied by zoom^this, until everything is drawn
-const LOD_MIN = 20_000;
+//
+// How many is "too many" is decided by INK COVERAGE: the share of the screen the dots paint
+// over. A fixed count is the wrong target, because dot diameter also grows with zoom, so
+// holding the count steady lets the ink keep climbing -- the old curve peaked near 150%
+// coverage around zoom 3-6, where dots are mostly drawing on top of each other, and it hit
+// every dot by zoom 5.7 of a 500x range. Budgeting coverage instead makes the two knobs
+// (how many dots, how big) consistent by construction: raise MAX_PX and fewer dots are drawn.
+// Neighbouring dots are kept at least this many dot-diameters apart on screen. It sets the
+// pyramid level, and so the on-screen density, directly. Derived analytically it would be
+// sqrt(pi / (4 * coverage)), but the pyramid stacks a cell's point together with its parents'
+// in the same patch of screen and cells are not uniformly occupied, so the honest value is
+// measured: 4.3 holds the dense computer-science blob near 15% ink across the zoom range,
+// where the analytic 2.37 left it at 50-70%.
+const DOT_GAP = 4.3;
+// Floor on the dot count. The geometry above is conservative at the extremes -- fully zoomed
+// out it asks for ~26k, and raising the time axis spreads the map over more screen and asks for
+// less still -- which leaves the overview thinner than it needs to be. Measured ink at this
+// floor is ~9%, well under the ~22% peak elsewhere in the zoom range.
+const LOD_MIN = 50_000;
 // Below this many drawn dots, tilted picking just scores them all (exact, ~1.5 ms).
 // Above it the ray's shadow is walked through the grid instead.
 const BRUTE_PICK_MAX = 400_000;
@@ -223,35 +239,64 @@ export function createPointEngine(container: HTMLElement, data: PointData) {
   // Draw order, which doubles as the level-of-detail order: the renderer draws a tail of this
   // index buffer, so whatever sits at the end is what survives when zoomed out.
   //
-  // Ranking purely by influence looked right and was badly wrong: citation data only exists for
-  // the 128,606 scraped papers, which are overwhelmingly computer science, so the top 120k was
-  // essentially "papers we have citations for" and the zoomed-out map showed arXiv as mostly CS.
+  // Points are bucketed into a quadtree-style pyramid. Level 0 is a 1x1 grid, level 1 a 2x2,
+  // and so on; each cell accepts exactly ONE point, and points are offered to the pyramid most
+  // influential first, so the most important paper in a region claims the coarsest free cell.
+  // Drawing levels 0..L therefore yields at most one dot per cell of a 2^L grid -- an evenly
+  // spread sample whose density is CAPPED everywhere.
   //
-  // Instead the budget is split. A small fixed set of LANDMARKS -- the most influential papers
-  // overall -- is always drawn and always painted last. Everything else is sampled UNIFORMLY at
-  // random, so any prefix of the order is a fair thumbnail of the whole corpus and the map keeps
-  // its shape as dots drop out.
-  //
-  // Weighting by influence rank instead of a fixed set does not work here: rank is dense near 1,
-  // so at 120k dots the influence side swallowed ~98k of the budget and the thumbnail was still
-  // mostly computer science.
-  const LANDMARKS = 8_000;
-  /** Deterministic per-index hash in [0,1) -- stable across reloads, no RNG state. */
-  const hash01 = (i: number) => {
-    let h = Math.imul(i ^ 0x9e3779b9, 0x85ebca6b);
-    h = Math.imul(h ^ (h >>> 13), 0xc2b2ae35);
-    return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
-  };
-  const lodKey = new Float32Array(n);
-  for (let i = 0; i < n; i++) lodKey[i] = hash01(i) * 0.98;
-  // byScore is ascending by influence, so its last LANDMARKS entries are the top papers.
-  for (let k = Math.max(0, n - LANDMARKS); k < n; k++) {
-    lodKey[byScore[k]] = 0.99 + (0.01 * (k - (n - LANDMARKS))) / Math.max(1, LANDMARKS);
+  // That cap is the point. Two simpler schemes failed on this data:
+  //   - by influence alone: citation data only covers the 128,606 scraped papers, nearly all
+  //     computer science, so the zoomed-out map looked like arXiv was almost entirely CS;
+  //   - a flat random sample: honest globally, but it thins dense and sparse regions by the
+  //     same ratio, so the dense CS blob stayed a solid mass while the rest went bare.
+  // The pyramid keeps the landmarks (they win the coarse cells) and fixes both.
+  const MAX_LEVEL = 11; // 4^11 = 4.2M cells at the finest level, for 3.2M points
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (let i = 0; i < n; i++) {
+    if (x[i] < minX) minX = x[i];
+    if (x[i] > maxX) maxX = x[i];
+    if (y[i] < minY) minY = y[i];
+    if (y[i] > maxY) maxY = y[i];
+  }
+  const spanX = maxX - minX || 1;
+  const spanY = maxY - minY || 1;
+
+  const occupied: Uint8Array[] = [];
+  for (let l = 0; l <= MAX_LEVEL; l++) occupied.push(new Uint8Array(1 << (2 * l)));
+  const level = new Uint8Array(n);
+  // byScore runs ascending by influence, so walking it backwards offers the best papers first.
+  for (let k = n - 1; k >= 0; k--) {
+    const i = byScore[k];
+    const fx = (x[i] - minX) / spanX;
+    const fy = (y[i] - minY) / spanY;
+    let placed = MAX_LEVEL + 1; // overflow: a cell was taken at every level
+    for (let l = 0; l <= MAX_LEVEL; l++) {
+      const side = 1 << l;
+      const col = Math.min(side - 1, (fx * side) | 0);
+      const row = Math.min(side - 1, (fy * side) | 0);
+      const cell = row * side + col;
+      if (!occupied[l][cell]) {
+        occupied[l][cell] = 1;
+        placed = l;
+        break;
+      }
+    }
+    level[i] = placed;
   }
 
+  // Running totals, so "draw levels 0..L" becomes a draw range. levelCumulative[L] is how many
+  // points sit at level L or coarser; the last entry is every point.
+  const levelCumulative = new Uint32Array(MAX_LEVEL + 2);
+  for (let i = 0; i < n; i++) levelCumulative[level[i]]++;
+  for (let l = 1; l <= MAX_LEVEL + 1; l++) levelCumulative[l] += levelCumulative[l - 1];
+
+  // Sorted deepest level first, so the TAIL of the buffer -- the part that stays drawn when
+  // zoomed out -- holds the coarse levels. Within a level, least influential first, so the
+  // important dots are painted last and land on top.
   const order = new Uint32Array(n);
   for (let i = 0; i < n; i++) order[i] = i;
-  order.sort((a, b) => lodKey[a] - lodKey[b]);
+  order.sort((a, b) => level[b] - level[a] || influence[a] - influence[b]);
 
   const geometry = new BufferGeometry();
   geometry.setAttribute('position', new BufferAttribute(positions, 3));
@@ -423,8 +468,32 @@ export function createPointEngine(container: HTMLElement, data: PointData) {
   // `order` runs least-to-most influential (noise first), so the most influential papers are its
   // tail. Drawing the last `drawCount` entries therefore shows the top papers and hides the rest.
   let drawCount = n;
-  const lodFor = (zoom: number) =>
-    Math.max(LOD_MIN, Math.min(n, Math.round(LOD_BASE * Math.pow(zoom, LOD_GROWTH))));
+
+  /**
+   * How many dots to draw, chosen by picking a pyramid level from screen geometry.
+   *
+   * Pick the level whose cells project to `spacing` pixels, and the view can hold at most one
+   * dot per spacing x spacing square -- everywhere, whatever the local density, because the
+   * pyramid already allows only one point per cell. On-screen density is then fixed by
+   * geometry, not by how crowded that part of the map happens to be.
+   *
+   * Deriving the count from a global budget instead (dots = coverage * area * zoom^2) assumes
+   * density is uniform across the map. It is not: that put the dense computer-science blob at
+   * 68% ink while the sparse regions sat at 22%.
+   */
+  const worldSpan = Math.max(spanX, spanY);
+  const lodFor = (_zoom: number) => {
+    const spacing = DOT_GAP * dotPx();
+    // 2^level cells across the map, each one `spacing` px wide on screen
+    const wanted = Math.log2((worldSpan * pxPerWorld()) / spacing);
+    const clamped = Math.max(0, Math.min(MAX_LEVEL + 1, wanted));
+    // Interpolate between whole levels, or the dot count would jump as you scroll.
+    const lo = Math.floor(clamped);
+    const hi = Math.min(MAX_LEVEL + 1, lo + 1);
+    const blend = clamped - lo;
+    const count = levelCumulative[lo] + blend * (levelCumulative[hi] - levelCumulative[lo]);
+    return Math.max(LOD_MIN, Math.min(n, Math.round(count)));
+  };
 
   /** Is paper i currently drawn? Used so hover and click can't land on a hidden dot. */
   const isDrawn = (i: number) => drawPos[i] >= n - drawCount;
@@ -786,6 +855,28 @@ export function createPointEngine(container: HTMLElement, data: PointData) {
     colorByField,
     setTimeAxis,
     setTilt,
+    /** How crowded the current view actually is. Used to tune DOT_GAP against real data. */
+    debugStats() {
+      refreshViewProj();
+      const m = viewProj.elements;
+      let onScreen = 0;
+      for (let k = n - drawCount; k < n; k++) {
+        const i = order[k];
+        const pz = zOf(i) * zNow;
+        const w = m[3] * x[i] + m[7] * y[i] + m[11] * pz + m[15];
+        const ndcX = (m[0] * x[i] + m[4] * y[i] + m[8] * pz + m[12]) / w;
+        const ndcY = (m[1] * x[i] + m[5] * y[i] + m[9] * pz + m[13]) / w;
+        if (ndcX >= -1 && ndcX <= 1 && ndcY >= -1 && ndcY <= 1) onScreen++;
+      }
+      const d = dotPx();
+      return {
+        zoom: +camera.zoom.toFixed(2),
+        drawn: drawCount,
+        onScreen,
+        dotPx: +d.toFixed(2),
+        inkCoverage: +((onScreen * Math.PI * 0.25 * d * d) / (width * height)).toFixed(3),
+      };
+    },
     get timeAxis() {
       return zTarget > 0;
     },
