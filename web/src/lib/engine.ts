@@ -78,6 +78,10 @@ export function createEngine(container: HTMLElement, overview: Overview, options
   let routed: number | null = null; // cluster id the URL hash asks for
   let fieldFilter: FieldFilter = null; // null, an arXiv field code, or 'other'
   let attached = new Set<GraphLink>(); // citation lines touching the selected paper
+  // While a paper is selected, it and every paper of this map that cites it or is cited by it are shown, whichever
+  // bubbles are open: their clusters are loaded and kept (pinned) until the paper is deselected.
+  let pinnedPapers = new Set<string>();
+  let pinnedClusters = new Set<number>();
   let edgeHoverNode: GraphNode | null = null; // the paper/bubble at the far end of the line under the mouse
   let edgeTip: EdgeTip | null = null;
   const loaded = new Map<number, LoadedCluster>();
@@ -112,7 +116,7 @@ export function createEngine(container: HTMLElement, overview: Overview, options
     n.year == null ? windowIsFull() : n.year >= windowLo && n.year <= windowHi;
   const isVisible = (n: GraphNode): boolean => {
     if (n.kind === 'cluster') return n.inWindow >= 0.5;
-    return n.bubble.open && yearVisible(n); // a paper shows only while its bubble is open
+    return yearVisible(n) && (n.bubble.open || pinnedPapers.has(n.id)); // a paper shows while its bubble is open, or while pinned
   };
   // While a graph is being built the library may still hold a link's ends as plain ids rather than
   // node objects, so link functions look the nodes up themselves.
@@ -124,7 +128,7 @@ export function createEngine(container: HTMLElement, overview: Overview, options
     if (!a || !b || !isVisible(a) || !isVisible(b)) return false;
     // The lines between bubbles would run across the papers of an open bubble, so they hide.
     if (l.kind === 'cluster') return !(a as BubbleNode).open && !(b as BubbleNode).open;
-    return true;
+    return attached.has(l); // citation lines between papers show only for the selected paper
   }
 
   // ---- Bubbles (built once; positions never change) ----
@@ -540,7 +544,7 @@ export function createEngine(container: HTMLElement, overview: Overview, options
     while (loaded.size > MAX_LOADED) {
       let oldest: { id: number; entry: LoadedCluster } | null = null;
       for (const [id, entry] of loaded) {
-        if (id === keepId || bubbleOf.get(id)!.open || detailsFor?.bubble.id === id) continue;
+        if (id === keepId || bubbleOf.get(id)!.open || detailsFor?.bubble.id === id || pinnedClusters.has(id)) continue;
         if (!oldest || entry.lastUsed < oldest.entry.lastUsed) oldest = { id, entry };
       }
       if (!oldest) return;
@@ -700,11 +704,12 @@ export function createEngine(container: HTMLElement, overview: Overview, options
       n.radius = Math.max(BUBBLE_MIN, lerp(n.shrunk, n.fullRadius, n.open ? smoothstep(OPEN_PX, FULL_PX, n.px) : 0));
       if (n.sphere) {
         n.sphere.scale.setScalar(n.radius);
+        const pinned = pinnedClusters.has(n.id); // shows papers for the selected paper's citations, so it must be see-through
         (n.sphere.material as MeshLambertMaterial).opacity = n.open
           ? lerp(BUBBLE_ALPHA, FADED_ALPHA, smoothstep(FADE_START_PX, FADE_END_PX, n.px))
-          : BUBBLE_ALPHA;
+          : pinned ? FADED_ALPHA : BUBBLE_ALPHA;
         // An open bubble must not catch the mouse, or you could never hover the papers inside it.
-        n.sphere.raycast = n.open ? noRaycast : Mesh.prototype.raycast;
+        n.sphere.raycast = n.open || pinned ? noRaycast : Mesh.prototype.raycast;
       }
       updateHalo(n);
       updateTitle(n, pxPerUnit, view);
@@ -842,6 +847,7 @@ export function createEngine(container: HTMLElement, overview: Overview, options
     detailsFor = n;
     updateHalo(prev);
     updateHalo(n);
+    pinCitations(n);
     refreshHighlight();
     emit();
   }
@@ -850,8 +856,39 @@ export function createEngine(container: HTMLElement, overview: Overview, options
     const prev = detailsFor;
     detailsFor = null;
     updateHalo(prev);
+    pinnedPapers = new Set();
+    pinnedClusters = new Set();
     refreshHighlight();
+    scheduleLOD(); // the pinned bubbles go back to normal
     emit();
+  }
+
+  /**
+   * Show every paper of this map that cites `n` or is cited by `n`: they are named in n's own cluster file (lines inside
+   * the cluster, and lines to other clusters), so pin those papers and load their clusters. When a cluster arrives
+   * the lines to it turn from stubs into lines between papers.
+   */
+  function pinCitations(n: PaperNode) {
+    const entry = loaded.get(n.bubble.id);
+    const papers = new Set([n.id]);
+    const clusterIds = new Set([n.bubble.id]);
+    for (const l of entry?.links ?? []) {
+      if (l.source !== n.id && l.target !== n.id) continue;
+      if (l.cross) {
+        papers.add(l.outsideId!);
+        clusterIds.add(l.neighbor!);
+      } else {
+        papers.add(l.source === n.id ? l.target : l.source);
+      }
+    }
+    pinnedPapers = papers;
+    pinnedClusters = clusterIds;
+    scheduleLOD();
+    Promise.all([...clusterIds].map((id) => ensureLoaded(id))).then(() => {
+      if (destroyed || detailsFor !== n) return; // another paper was selected meanwhile
+      flushRebuild(); // the new papers must be in the graph before they can be shown
+      refreshHighlight();
+    });
   }
 
   // ---- Citation lines of the selected paper: highlight, hover, follow ----
@@ -871,6 +908,7 @@ export function createEngine(container: HTMLElement, overview: Overview, options
     }
     clearEdgeHover();
     graph.linkColor(linkColor).linkWidth(linkWidth).linkDirectionalArrowLength(arrowLength);
+    graph.nodeVisibility(isVisible).linkVisibility(linkVisible); // which papers and lines show depends on the selection
     updateEdgeHover(); // the mouse may be resting on one of the new lines
   }
 

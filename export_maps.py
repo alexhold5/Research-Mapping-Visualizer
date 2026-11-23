@@ -12,16 +12,23 @@ Clicking a bubble, or a node standing for a category or cluster, opens that map 
 Files (all compact JSON):
   maps/index.json                    every map: id, title, level, parent
   maps/<map>/overview.json           "slim": 1, meta, years, timeline, fields, bubbles, links
+        links: [bubble, bubble, citations between them] over ALL papers of the two bubbles, each bubble's strongest few
+               (empty unless --bubble-links: the website draws the papers' own citations instead)
+        shown: {cluster id: [arxiv id of each paper in its file]} (category maps only)
       bubble: {id, title, size, x, y, field, share, top, count, fy, [inf], [map], inner}
         field = index into fields (len(fields) = "other"); fy = {field index: papers per year} (non-empty fields only);
         map = the map clicking it opens; inner = what zooming into it shows ("categories" / "clusters" / "papers").
   maps/<map>/clusters/<bubble id>.json   what zooming into that bubble shows, one of:
-      {"papers": [[arxiv id, title, x, y, year, influence, field], ...], "links": [[row, row], ...]}
+      {"papers": [[arxiv id, title, x, y, year, influence, field, citations], ...], "links": [[row, row], ...],
+       "cross": [[row, other cluster, other row, 1 if the row's paper cites it else 0], ...]}
+        links: the first row's paper cites the second's, both in this file
+        cross: citations between a paper here and a paper in another cluster of the same map (all of them);
+               the other paper's id is overview "shown"[other cluster][other row]
       {"opens":  [[map, cluster or null, title, x, y, papers, year], ...]}
 Authors, abstracts and full citation lists are not stored: the website fetches them for the one selected paper.
 
-The CSV is ~4 GB, so it is read twice to keep memory low: first everything except titles, then only the titles of
-papers that are actually shown.
+The CSV is ~5 GB, so it is read in passes to keep memory low: first everything except titles and references, then only
+the references of shown papers (for the citation lines), then only the titles of shown papers.
 
 Usage:
   python export_maps.py
@@ -30,6 +37,7 @@ Usage:
 import argparse
 import json
 import os
+import re
 import shutil
 import time
 
@@ -45,9 +53,11 @@ INFLUENCE = os.path.join("web", "public", "data", "influence_full.csv")  # from 
 OUT_DIR = os.path.join("web", "public", "data", "maps")
 ROOT = "arxiv"     # id of the top map
 PER_BUBBLE = 50    # papers shown when a cluster is zoomed into
+LINKS_PER_BUBBLE = 6  # bubble-to-bubble citation lines kept: each bubble's strongest few
 FIELD_COUNT = 12   # fields that get their own color in a map; the rest share "other"
 SEED = 0           # the random sample (used until there are influence scores) is repeatable
 CHUNK = 400_000
+REF = re.compile(r'"ARXIV:([^"]+)"')  # one entry of a paper's referenced_paper_ids
 
 READ = ["id", "categories", "primary_cat", "x_2d", "y_2d", "cluster_label", "cluster_title", "local_x", "local_y"]
 FLOATS = ["x_2d", "y_2d", "local_x", "local_y", "influence_score"]
@@ -74,10 +84,12 @@ def load(csv_path, influence_path=INFLUENCE):
     """Every paper, without titles. Text columns become categoricals and numbers float32 to keep memory low.
     influence_score comes from the CSV if it has the column, else from the add_influence.py sidecar if that exists."""
     started = time.time()
-    has_influence = "influence_score" in pd.read_csv(csv_path, nrows=0).columns
-    cols = READ + (["influence_score"] if has_influence else [])
+    header = pd.read_csv(csv_path, nrows=0).columns
+    has_influence = "influence_score" in header
+    has_citations = "citations_count" in header
+    cols = READ + (["influence_score"] if has_influence else []) + (["citations_count"] if has_citations else [])
     dtypes = {"id": str, "primary_cat": "category", "cluster_title": "category", "cluster_label": "int32",
-              **{c: "float32" for c in FLOATS if c in cols}}
+              **{c: "float32" for c in FLOATS if c in cols}, **({"citations_count": "int32"} if has_citations else {})}
     parts = []
     for chunk in pd.read_csv(csv_path, usecols=cols, dtype=dtypes, chunksize=CHUNK):
         # The category each paper is most cross-listed with (its first other category), or its own if none.
@@ -100,6 +112,8 @@ def load(csv_path, influence_path=INFLUENCE):
         has_influence = True
     elif not has_influence:
         df["influence_score"] = np.float32(0)
+    if not has_citations:
+        df["citations_count"] = np.int32(0)
     print(f"Loaded {len(df):,} papers in {time.time() - started:.0f}s "
           f"({'ranking by influence_score' if has_influence else 'no influence_score yet: papers are a random sample'})")
     return df, has_influence
@@ -129,6 +143,8 @@ class Exporter:
         self.years = list(range(self.y0, int(df["year_int"].max()) + 1))
         self.maps = {}         # map id -> {"overview": ..., "files": {bubble id: contents}}
         self.wanted = set()    # ids of papers shown somewhere (their titles are read later)
+        self.placed = {}       # shown paper id -> (map id, bubble id, row in that bubble's "papers")
+        self.edges = None      # (citing row, cited row) over all papers, int32 arrays; see load_edges
         groups = df.groupby("group", observed=True)["primary_cat"].nunique()
         self.multi = {g for g, n in groups.items() if n > 1}  # groups with their own map of categories
 
@@ -139,6 +155,47 @@ class Exporter:
 
     def category_map(self, cat):
         return f"{cat}.general" if cat in self.multi else cat
+
+    def load_edges(self, csv_path):
+        """Every citation between two papers of the dataset, as (citing row, cited row) arrays (35M edges, ~280 MB)."""
+        started = time.time()
+        index = pd.Index(self.df["id"])
+        src_parts, dst_parts, offset = [], [], 0
+        for chunk in pd.read_csv(csv_path, usecols=["referenced_paper_ids"], dtype=str, chunksize=CHUNK):
+            citing, refs = [], []
+            for i, text in enumerate(chunk["referenced_paper_ids"].fillna("[]")):
+                if len(text) > 2:
+                    found = REF.findall(text)
+                    refs.extend(found)
+                    citing.extend([offset + i] * len(found))
+            cited = index.get_indexer(refs)
+            ok = cited >= 0
+            src_parts.append(np.array(citing, dtype=np.int32)[ok])
+            dst_parts.append(cited[ok].astype(np.int32))
+            offset += len(chunk)
+        self.edges = (np.concatenate(src_parts), np.concatenate(dst_parts))
+        print(f"Loaded {len(self.edges[0]):,} citation edges in {time.time() - started:.0f}s")
+
+    def bubble_links(self, bubble_of_row):
+        """
+        [bubble, bubble, citations between them] for one map. bubble_of_row[i] is paper i's bubble id in this map
+        (-1 = not in this map). Counts both directions together, over ALL the papers in the two bubbles, then keeps
+        each bubble's LINKS_PER_BUBBLE strongest connections so big maps don't get a hairball.
+        """
+        if self.edges is None:
+            return []
+        a, b = bubble_of_row[self.edges[0]], bubble_of_row[self.edges[1]]
+        keep = (a >= 0) & (b >= 0) & (a != b)
+        a, b = a[keep].astype(np.int64), b[keep].astype(np.int64)
+        pairs, counts = np.unique((np.minimum(a, b) << 32) | np.maximum(a, b), return_counts=True)
+        quota, links = {}, []
+        for i in np.argsort(-counts, kind="stable"):
+            lo, hi = int(pairs[i] >> 32), int(pairs[i] & 0xFFFFFFFF)
+            if quota.get(lo, 0) < LINKS_PER_BUBBLE or quota.get(hi, 0) < LINKS_PER_BUBBLE:
+                links.append([lo, hi, int(counts[i])])
+                quota[lo] = quota.get(lo, 0) + 1
+                quota[hi] = quota.get(hi, 0) + 1
+        return links
 
     def per_year(self, years_int):
         return np.bincount(years_int - self.y0, minlength=len(self.years))
@@ -160,6 +217,7 @@ class Exporter:
         own = index.get(own_field, -1)
 
         bubbles, files, xs, ys = [], {}, [], []
+        bubble_of_row = np.full(len(self.df), -1, dtype=np.int32)  # which bubble of THIS map each paper is in
         for k, (value, g) in enumerate(frame.groupby(key, observed=True, sort=True)):
             bid = int(value) if key == "cluster_label" else k
             f_g = field_of[g.index].to_numpy()
@@ -169,6 +227,7 @@ class Exporter:
             totals = fy.sum(axis=1)
             ranked = [f for f in np.argsort(-totals, kind="stable") if totals[f] > 0]
             main = next((f for f in ranked if f != own), ranked[0])  # color by what it is cross-listed with
+            bubble_of_row[g.index] = bid
             bubble = {
                 "id": bid,
                 "title": bubble_title(value, g) if bubble_title else clean(value),
@@ -187,6 +246,8 @@ class Exporter:
                 bubble["map"] = opens(value)
             body = contents(value, g) if contents else self.top_papers(g, field_of, x_col, y_col)
             bubble["top"] = body.pop("_top")
+            for row, paper in enumerate(body.get("papers", [])):
+                self.placed[paper[0]] = (map_id, bid, row)
             files[bid] = body
             bubbles.append(bubble)
             xs.append(float(g[x_col].mean()))
@@ -214,7 +275,7 @@ class Exporter:
                 "timeline": {"count": self.per_year(frame["year_int"].to_numpy()).tolist()},
                 "fields": [{"code": c, "name": names(c), "papers": int(fields_count[c])} for c in top],
                 "bubbles": bubbles,
-                "links": [],
+                "links": self.bubble_links(bubble_of_row),
             },
             "files": files,
         }
@@ -225,9 +286,9 @@ class Exporter:
         top = g.nlargest(n, "influence_score") if self.has_influence else g.sample(n=n, random_state=self.rng)
         self.wanted.update(top["id"])
         rows = [[pid, None, round(float(x), 3), round(float(y), 3), round(float(yr), 2), round(float(inf), 3),
-                 int(f)]
-                for pid, x, y, yr, inf, f in zip(top["id"], top[x_col], top[y_col], top["year"],
-                                                 top["influence_score"], field_of[top.index])]
+                 int(f), int(c)]
+                for pid, x, y, yr, inf, f, c in zip(top["id"], top[x_col], top[y_col], top["year"],
+                                                    top["influence_score"], field_of[top.index], top["citations_count"])]
         return {"papers": rows, "links": [], "_top": rows[0][0]}  # "_top": the id whose title names the top paper
 
     def cluster_nodes(self, cat, g):
@@ -282,6 +343,41 @@ class Exporter:
             )
         print(f"  {len(self.maps)} maps, {len(self.wanted):,} papers shown")
 
+    def add_links(self, csv_path):
+        """
+        Citation lines between shown papers, from each paper's references:
+          links: both papers in the same cluster file -> [citing row, cited row] in that file.
+          cross: the other paper is in ANOTHER cluster of the same map -> [row, other cluster, other row, 1 if this
+                 paper cites it else 0], listed in both clusters' files. Every such citation is kept; citations to
+                 papers in other maps are not drawn. The overview's "shown" table gives each cluster's paper ids, so
+                 the website can name the other paper from (other cluster, other row).
+        """
+        started = time.time()
+        placed, count, cross = self.placed, 0, {}
+        files = lambda map_id, bid: self.maps[map_id]["files"][bid]
+        for chunk in pd.read_csv(csv_path, usecols=["id", "referenced_paper_ids"], dtype=str, chunksize=CHUNK):
+            shown = chunk[chunk["id"].isin(placed)]
+            for pid, refs in zip(shown["id"], shown["referenced_paper_ids"].fillna("[]")):
+                map_id, bid, row = placed[pid]
+                for ref in REF.findall(refs):
+                    there = placed.get(ref)
+                    if not there or ref == pid or there[0] != map_id:
+                        continue
+                    if there[1] == bid:
+                        files(map_id, bid)["links"].append([row, there[2]])
+                        count += 1
+                    else:
+                        cross.setdefault((map_id, bid), []).append([row, there[1], there[2], 1])
+                        cross.setdefault((map_id, there[1]), []).append([there[2], bid, row, 0])
+        for (map_id, bid), entries in cross.items():
+            files(map_id, bid)["cross"] = entries
+        for m in self.maps.values():  # the paper ids of each cluster, so cross entries can be turned back into ids
+            if any("papers" in body for body in m["files"].values()):
+                m["overview"]["shown"] = {str(bid): [p[0] for p in body["papers"]] for bid, body in m["files"].items()}
+        with_links = sum(1 for m in self.maps.values() for b in m["files"].values() if b.get("links"))
+        print(f"Found {count:,} citation lines inside clusters, in {with_links:,} cluster files; "
+              f"{sum(len(v) for v in cross.values()):,} cross-cluster entries (both ends listed) ({time.time() - started:.0f}s)")
+
     def write(self, out_dir, titles):
         # Remove only map folders an earlier run wrote (each holds an overview.json).
         if os.path.isdir(out_dir):
@@ -323,12 +419,17 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--csv", default=CSV)
     parser.add_argument("--out", default=OUT_DIR)
+    parser.add_argument("--bubble-links", action="store_true",
+                        help="also write citation counts between bubbles into each overview (needs ~280 MB and ~80 s more)")
     args = parser.parse_args()
     started = time.time()
 
     df, has_influence = load(args.csv)
     exporter = Exporter(df, has_influence)
+    if args.bubble_links:
+        exporter.load_edges(args.csv)
     exporter.run()
+    exporter.add_links(args.csv)
     titles = read_titles(args.csv, exporter.wanted)
     exporter.write(args.out, titles)
     print(f"Done in {time.time() - started:.0f}s")

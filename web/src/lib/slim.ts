@@ -1,4 +1,4 @@
-import type { ClusterFile, ClusterLinkRaw, ClusterSummary, Field, Meta, Overview, RawPaper } from '../types';
+import type { ClusterFile, ClusterFileLink, ClusterLinkRaw, ClusterSummary, ExternalPaper, Field, Meta, Overview, RawPaper } from '../types';
 
 // ---------------------------------------------------------------------------
 // The drill-down maps (export_maps.py) are stored in a compact form: papers as short arrays and only the
@@ -39,10 +39,14 @@ export interface SlimOverview {
   bubbles: SlimBubble[];
   /** [bubble id, bubble id, citations between them] */
   links: [number, number, number][];
+  /** Category maps: cluster id -> the arXiv ids of its file's papers, in order. */
+  shown?: Record<string, string[]>;
 }
 
-/** [arXiv id, title, x, y, year, influence, field index] */
-export type SlimPaperRow = [string, string, number, number, number, number, number];
+/** [arXiv id, title, x, y, year, influence, field index, citations] */
+export type SlimPaperRow = [string, string, number, number, number, number, number, number];
+/** [row, the other paper's cluster, the other paper's row there, 1 if this row's paper cites it, 0 if it cites this one] */
+export type SlimCrossRow = [number, number, number, 0 | 1];
 /** [map, cluster id or null (= the whole map), title, x, y, papers, year] */
 export type SlimOpensRow = [string, number | null, string, number, number, number, number];
 
@@ -50,6 +54,8 @@ export interface SlimClusterFile {
   papers?: SlimPaperRow[];
   /** [row, row]: the paper in the first row cites the one in the second. */
   links?: [number, number][];
+  /** Citations between a paper here and a paper in another cluster of the same map. */
+  cross?: SlimCrossRow[];
   opens?: SlimOpensRow[];
 }
 
@@ -82,7 +88,7 @@ export function expandOverview(raw: SlimOverview): Overview {
     inner: b.inner,
   }));
   const links: ClusterLinkRaw[] = raw.links.map(([source, target, weight]) => ({ source, target, weight }));
-  return { meta: raw.meta, years, timeline: { count: raw.timeline.count, inf: raw.timeline.inf ?? zeros }, fields, clusters, links };
+  return { meta: raw.meta, years, timeline: { count: raw.timeline.count, inf: raw.timeline.inf ?? zeros }, fields, clusters, links, shownIds: raw.shown };
 }
 
 /** "0704.0001" -> "2007-04", "hep-ex/0111022" -> "2001-11" (arXiv ids encode the submission month). */
@@ -97,10 +103,10 @@ export function expandClusterFile(raw: SlimClusterFile, bubbleId: number, overvi
   const { fields } = overview;
   const bubble = overview.clusters.find((c) => c.id === bubbleId);
   const nodes: RawPaper[] = [];
-  for (const [id, title, x, y, year, influence, field] of raw.papers ?? []) {
+  for (const [id, title, x, y, year, influence, field, citations] of raw.papers ?? []) {
     const f = fields[field];
     nodes.push({
-      id, title, x, y, year, influence, citations: 0, date: submissionMonth(id),
+      id, title, x, y, year, influence, citations: citations ?? 0, date: submissionMonth(id),
       category: f?.name ?? 'Other', categoryCode: f?.code ?? 'other', authors: [], abstract: '', arxivId: id,
     });
   }
@@ -113,6 +119,22 @@ export function expandClusterFile(raw: SlimClusterFile, bubbleId: number, overvi
     });
   }
   const rows = raw.papers ?? [];
-  const links = (raw.links ?? []).map(([a, b]) => ({ source: rows[a][0], target: rows[b][0] }));
-  return { id: bubbleId, nodes, external: [], neighbors: [], links };
+  const links: ClusterFileLink[] = (raw.links ?? []).map(([a, b]) => ({ source: rows[a][0], target: rows[b][0] }));
+
+  // Lines to papers in other clusters. The other paper's details aren't in this file, so it is named by its arXiv id
+  // until its cluster opens (then the real paper is drawn and the line joins the two papers).
+  const external = new Map<string, ExternalPaper>();
+  for (const [row, cluster, otherRow, cites] of raw.cross ?? []) {
+    const otherId = overview.shownIds?.[cluster]?.[otherRow];
+    if (!otherId) continue;
+    if (!external.has(otherId)) {
+      external.set(otherId, {
+        id: otherId, title: `arXiv:${otherId}`, year: null, date: submissionMonth(otherId), influence: 0, citations: 0,
+        category: '', categoryCode: 'other', authors: [], abstract: '', arxivId: otherId, cluster, inTop: true,
+      });
+    }
+    const mine = rows[row][0];
+    links.push(cites ? { source: mine, target: otherId, cross: true } : { source: otherId, target: mine, cross: true });
+  }
+  return { id: bubbleId, nodes, external: [...external.values()], neighbors: [], links };
 }

@@ -71,6 +71,8 @@ export interface Overview {
   fields: Field[];
   clusters: ClusterSummary[];
   links: ClusterLinkRaw[];
+  /** Drill-down maps: arXiv ids of the papers in each cluster's file, in file order (names the far end of a cross-cluster line). */
+  shownIds?: Record<string, string[]>;
 }
 
 export interface PaperInfo {

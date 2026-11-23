@@ -32,7 +32,7 @@ export function Hud({ engine }: { engine: Engine }) {
           <p id="hint" className="hint">
             {isGroupMap
               ? `Showing its ${engine.focusedPaperCount()} ${focused.cluster.inner ?? 'clusters'} (size = papers). Click one to open it.`
-              : `Showing ${meta.ranked === 'random' ? `a random sample of ${engine.focusedPaperCount()} papers (no influence scores yet)` : `its ${engine.focusedPaperCount()} most influential papers (size = influence rank)`}. Arrows point to the cited paper; lines to other clusters end at their bubble until you zoom into it. Drag to pan to a neighbor.`}
+              : `Showing ${meta.ranked === 'random' ? `a random sample of ${engine.focusedPaperCount()} papers (no influence scores yet)` : `its ${engine.focusedPaperCount()} most influential papers (size = influence rank)`}. Click a paper to see its citations: the papers of this map that cite it or are cited by it show up, in any cluster, with arrows pointing to the cited paper. Drag to pan to a neighbor.`}
           </p>
           <div id="selection">
             <button id="back" type="button" onClick={() => engine.navigate('')}>
@@ -64,7 +64,7 @@ export function Hud({ engine }: { engine: Engine }) {
           <p id="hint" className="hint">
             {isGroupMap
               ? `Bubble size = papers in the ${one} · color = ${one}. Scroll to zoom toward the pointer; drag to pan.`
-              : 'Bubble size = papers in the cluster · color = main arXiv field · lines = citations between clusters. Scroll to zoom toward the pointer (or click a bubble) to see inside it; drag to pan.'}
+              : 'Bubble size = papers in the cluster · color = main arXiv field. Scroll to zoom toward the pointer (or click a bubble) to see inside it and the citations from its papers to other clusters; drag to pan.'}
           </p>
           <div id="selection" hidden />
         </>
